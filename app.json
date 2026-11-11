@@ -6,6 +6,9 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
+    "extra": {
+      "webPushVapidPublicKey": "BDTXmCLvdFQsbe2S6n8VK5z6XkNFHuvFYQKBSE7E4JbAX8-_Y3xGkaQ_Di2mIQ0weSdgM0kpDEeg_-Mx4S8oJXw"
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",

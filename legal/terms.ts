@@ -59,6 +59,7 @@ export const TERMS_SECTIONS = [
     title: '8. Privacy and personal information',
     paragraphs: [
       'GetBuy uses account, contact, order, and delivery information to operate the marketplace, provide support, and protect users. Information needed to fulfil an order may be shared with its seller or assigned delivery partner.',
+      'If you enable browser alerts, GetBuy stores your browser push subscription to deliver notifications. You can turn browser alerts off from Notifications; push providers handle delivery to your browser.',
       'These terms do not replace the GetBuy Privacy Policy. Before public launch, publish a separate privacy notice explaining the personal information collected, purposes, lawful basis, retention, sharing, and how users can exercise their rights under applicable data-protection law.',
     ],
   },

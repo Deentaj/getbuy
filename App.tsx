@@ -32,6 +32,9 @@ WebBrowser.maybeCompleteAuthSession();
 const SUPPORT_EMAIL = 'support@getbuy.com.ng';
 const PAYMENT_SIMULATOR_AVAILABLE = __DEV__;
 const isValidEmailOtp = (token: string) => /^\d{6,8}$/.test(token);
+const WEB_PUSH_PUBLIC_KEY = typeof Constants.expoConfig?.extra?.webPushVapidPublicKey === 'string'
+  ? Constants.expoConfig.extra.webPushVapidPublicKey
+  : undefined;
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
@@ -814,6 +817,13 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
+function decodeBase64Url(value: string) {
+  const padding = '='.repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(base64);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
 async function getFunctionErrorMessage(error: unknown, fallback: string) {
   if (typeof error === 'object' && error !== null && 'context' in error) {
     const context = (error as { context?: unknown }).context;
@@ -1097,6 +1107,8 @@ function AppContent() {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [notificationError, setNotificationError] = useState('');
   const [pushSetupNotice, setPushSetupNotice] = useState('');
+  const [browserPushEnabled, setBrowserPushEnabled] = useState(false);
+  const [isEnablingBrowserPush, setIsEnablingBrowserPush] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const [storageAvailable, setStorageAvailable] = useState(true);
   const [remoteProducts, setRemoteProducts] = useState<Product[]>([]);
@@ -1466,7 +1478,31 @@ function AppContent() {
 
     const registerForPush = async () => {
       if (Platform.OS === 'web') {
-        setPushSetupNotice('Push alerts are available in the Android and iOS app.');
+        if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+          setPushSetupNotice('This browser does not support push alerts. In-app notifications are still available.');
+          return;
+        }
+        if (Notification.permission === 'denied') {
+          setPushSetupNotice('Browser notifications are blocked for this site. Allow them in your browser settings.');
+          return;
+        }
+        const registration = await navigator.serviceWorker.getRegistration('/');
+        const subscription = await registration?.pushManager.getSubscription();
+        if (subscription && Notification.permission === 'granted') {
+          const { data, error } = await supabase.functions.invoke('web-push-subscription', {
+            body: { action: 'status', endpoint: subscription.endpoint },
+          });
+          if (error) throw error;
+          if (active && data?.enabled === true) {
+            setBrowserPushEnabled(true);
+            setPushSetupNotice('Browser push alerts are enabled.');
+            return;
+          }
+        }
+        if (active) {
+          setBrowserPushEnabled(false);
+          setPushSetupNotice('Enable browser alerts to receive notifications when GetBuy is closed.');
+        }
         return;
       }
 
@@ -1532,6 +1568,94 @@ function AppContent() {
       responseSubscription?.remove();
     };
   }, [currentUserId, isGuestBrowsing, isHydrated, isSupabaseConfigured]);
+
+  const enableBrowserPush = async () => {
+    if (Platform.OS !== 'web' || !currentUserId) return;
+    setIsEnablingBrowserPush(true);
+    setNotificationError('');
+    try {
+      if (!WEB_PUSH_PUBLIC_KEY) throw new Error('Browser push is not configured for this app yet.');
+      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+        throw new Error('This browser does not support push alerts.');
+      }
+      const permission = Notification.permission === 'granted'
+        ? 'granted'
+        : await Notification.requestPermission();
+      if (permission !== 'granted') {
+        setPushSetupNotice('Browser notification permission was not granted. You can still see alerts in GetBuy.');
+        return;
+      }
+      const registration = await navigator.serviceWorker.register('/push-service-worker.js');
+      await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription()
+        || await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeBase64Url(WEB_PUSH_PUBLIC_KEY),
+        });
+      const subscriptionJson = subscription.toJSON();
+      const p256dh = subscriptionJson.keys?.p256dh;
+      const auth = subscriptionJson.keys?.auth;
+      if (!p256dh || !auth) throw new Error('The browser returned an invalid push subscription. Try again.');
+      const { error } = await supabase.functions.invoke('web-push-subscription', {
+        body: { action: 'subscribe', endpoint: subscription.endpoint, p256dh, auth },
+      });
+      if (error) throw error;
+      const { error: dispatchError } = await supabase.functions.invoke('notify-order-event', {
+        body: { event_type: 'dispatch_pending' },
+      });
+      if (dispatchError) console.warn('Unable to dispatch previously queued web push alerts.', dispatchError);
+      setBrowserPushEnabled(true);
+      setPushSetupNotice('Browser push alerts are enabled.');
+    } catch (error: unknown) {
+      console.error('Browser push registration failed.', error);
+      setNotificationError(await getFunctionErrorMessage(error, 'Unable to enable browser push alerts.'));
+    } finally {
+      setIsEnablingBrowserPush(false);
+    }
+  };
+
+  const disableBrowserPush = async () => {
+    if (Platform.OS !== 'web' || !currentUserId) return;
+    setIsEnablingBrowserPush(true);
+    setNotificationError('');
+    try {
+      const registration = await navigator.serviceWorker.getRegistration('/');
+      const subscription = await registration?.pushManager.getSubscription();
+      if (subscription) {
+        const { error } = await supabase.functions.invoke('web-push-subscription', {
+          body: { action: 'unsubscribe', endpoint: subscription.endpoint },
+        });
+        if (error) throw error;
+        await subscription.unsubscribe();
+      }
+      setBrowserPushEnabled(false);
+      setPushSetupNotice('Browser push alerts are off. In-app notifications are still available.');
+    } catch (error: unknown) {
+      console.error('Browser push unregistration failed.', error);
+      setNotificationError(await getFunctionErrorMessage(error, 'Unable to turn off browser push alerts.'));
+    } finally {
+      setIsEnablingBrowserPush(false);
+    }
+  };
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const handleNotificationClick = (event: MessageEvent) => {
+      if (event.data?.type === 'open-notifications') setScreen('notifications');
+    };
+    navigator.serviceWorker?.addEventListener('message', handleNotificationClick);
+    return () => navigator.serviceWorker?.removeEventListener('message', handleNotificationClick);
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !isHydrated || !currentUserId) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('openNotifications') === '1') {
+      setScreen('notifications');
+      url.searchParams.delete('openNotifications');
+      window.history.replaceState(window.history.state, '', url.toString());
+    }
+  }, [currentUserId, isHydrated]);
 
   const handleAuthCallback = async (url: string | null | undefined) => {
       if (!url || !url.includes('auth/callback')) return;
@@ -2649,6 +2773,21 @@ function AppContent() {
             .delete()
             .eq('user_id', userData.id);
           if (tokenError) console.warn('Unable to remove push tokens while signing out.', tokenError);
+          if (Platform.OS === 'web' && 'serviceWorker' in navigator && 'PushManager' in window) {
+            try {
+              const registration = await navigator.serviceWorker.getRegistration('/');
+              const subscription = await registration?.pushManager.getSubscription();
+              if (subscription) {
+                const { error: webPushError } = await supabase.functions.invoke('web-push-subscription', {
+                  body: { action: 'unsubscribe', endpoint: subscription.endpoint },
+                });
+                if (webPushError) throw webPushError;
+                await subscription.unsubscribe();
+              }
+            } catch (error: unknown) {
+              console.warn('Unable to remove the browser push subscription while signing out.', error);
+            }
+          }
         }
         const { error } = await supabase.auth.signOut();
         if (error) throw error;
@@ -5184,7 +5323,27 @@ function AppContent() {
           </View>
         </View>
         {notificationError ? <Text style={styles.authError}>{notificationError}</Text> : null}
-        {pushSetupNotice ? <Text style={styles.notificationSetupHint}>{pushSetupNotice}</Text> : null}
+        {pushSetupNotice ? (
+          <View style={styles.notificationSetup}>
+            <Text style={styles.notificationSetupHint}>{pushSetupNotice}</Text>
+            {Platform.OS === 'web' && currentUserId && !isGuestBrowsing ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={isEnablingBrowserPush}
+                onPress={() => { void (browserPushEnabled ? disableBrowserPush() : enableBrowserPush()); }}
+                style={styles.enableBrowserPushButton}
+              >
+                <Text style={styles.enableBrowserPushButtonText}>
+                  {isEnablingBrowserPush
+                    ? 'Updating…'
+                    : browserPushEnabled
+                      ? 'Turn off browser alerts'
+                      : 'Enable browser alerts'}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
         {notifications.length === 0 && marketplaceAlerts.length === 0 ? (
           <View style={styles.emptyState}>
             <View style={styles.emptyIconWrap}><Ionicons color="#1B4D8F" name="notifications-outline" size={44} /></View>
@@ -9251,7 +9410,10 @@ const styles = StyleSheet.create({
   notificationUnreadDot: { backgroundColor: '#1B67BA', borderRadius: 5, height: 9, marginLeft: 8, marginTop: 4, width: 9 },
   notificationCountPill: { backgroundColor: '#D9EAFD', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 7 },
   notificationCountText: { color: '#143A73', fontSize: 12, fontWeight: '800' },
-  notificationSetupHint: { backgroundColor: '#FFF8E8', borderRadius: 12, color: '#76520E', fontSize: 13, lineHeight: 19, marginTop: 14, padding: 12 },
+  notificationSetup: { backgroundColor: '#FFF8E8', borderRadius: 12, marginTop: 14, padding: 12 },
+  notificationSetupHint: { color: '#76520E', fontSize: 13, lineHeight: 19 },
+  enableBrowserPushButton: { alignSelf: 'flex-start', backgroundColor: '#143A73', borderRadius: 9, marginTop: 10, paddingHorizontal: 13, paddingVertical: 9 },
+  enableBrowserPushButtonText: { color: '#FFF', fontSize: 12, fontWeight: '800' },
   paymentOption: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#D6E4F2', borderRadius: 14, borderWidth: 1, flexDirection: 'row', marginTop: 10, minHeight: 68, paddingHorizontal: 14 },
   paymentRadioEmpty: { borderColor: '#A8C4E2', borderRadius: 11, borderWidth: 2, height: 22, width: 22 },
   selectedPayment: { backgroundColor: '#D5F0FF', borderColor: '#8FB8E8' },
