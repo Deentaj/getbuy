@@ -814,6 +814,22 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
+async function getFunctionErrorMessage(error: unknown, fallback: string) {
+  if (typeof error === 'object' && error !== null && 'context' in error) {
+    const context = (error as { context?: unknown }).context;
+    if (context instanceof Response) {
+      const body: unknown = await context.clone().json().catch(() => null);
+      if (typeof body === 'object' && body !== null) {
+        for (const key of ['error', 'message'] as const) {
+          const detail = (body as Record<string, unknown>)[key];
+          if (typeof detail === 'string' && detail.trim()) return detail;
+        }
+      }
+    }
+  }
+  return getErrorMessage(error, fallback);
+}
+
 async function getCurrentAuthenticatedUser() {
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   if (sessionError) throw sessionError;
@@ -4230,7 +4246,7 @@ function AppContent() {
         setToast('Your order was created, but payment status could not be confirmed yet. Check your order details before trying again.');
         setScreen('orders');
       } else {
-        setAuthError(getErrorMessage(error, 'Unable to place your order. Please try again.'));
+        setAuthError(await getFunctionErrorMessage(error, 'Unable to place your order. Please try again.'));
       }
     } finally {
       setIsSubmittingOrder(false);
