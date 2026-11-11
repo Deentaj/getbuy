@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import type { ReactNode } from 'react';
+import getBuyLogo from '../../assets/getbuy-logo.svg?url';
+import getBuyLogoInverse from '../../assets/getbuy-logo-inverse.svg?url';
 import { supabase, supabaseConfigured } from './supabase';
 
 type Tab = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'payouts';
@@ -476,7 +478,7 @@ export default function AdminApp() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#" aria-label="GetBuy Admin home"><span className="brand-mark">G</span><span>getBuy<span className="brand-light"> admin</span></span></a>
+        <a className="brand" href="#" aria-label="GetBuy Admin home"><img className="brand-logo" src={getBuyLogoInverse} alt="GetBuy" /><span className="brand-light">admin</span></a>
         <div className="sidebar-label">WORKSPACE</div>
         <nav className="nav-list" aria-label="Admin sections">
           {tabs.map((item) => (
@@ -665,7 +667,7 @@ function Login({
   return (
     <main className="login-screen">
       <section className="login-card">
-        <a className="brand login-brand" href="#"><span className="brand-mark">G</span><span>getBuy<span className="brand-light"> admin</span></span></a>
+        <a className="brand login-brand" href="#"><img className="brand-logo" src={getBuyLogo} alt="GetBuy" /><span className="brand-light">admin</span></a>
         <p className="eyebrow">PRIVATE OPERATIONS PORTAL</p>
         <h1>Welcome back</h1>
         <p className="muted">Sign in with your GetBuy administrator account.</p>

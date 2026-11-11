@@ -8493,22 +8493,18 @@ function FormShell({ title, description, onBack, children, hideHeader = false }:
 }
 
 function BrandMark() {
-  return <View style={styles.brandMark}><BoxMark /><Text style={styles.brandMarkText}>getBuy</Text></View>;
+  return <Image accessibilityLabel="GetBuy" resizeMode="contain" source={require('./assets/getbuy-logo.png')} style={styles.brandMark} />;
 }
 
-function BoxMark({ green = false, light = false }: { green?: boolean; light?: boolean }) {
+function LogoLockup({ light = false, compact = false }: { light?: boolean; green?: boolean; compact?: boolean }) {
   return (
-    <View style={styles.boxMark}>
-      <View style={[styles.boxTopLeft, light && styles.boxLight, green && styles.boxGreen]} />
-      <View style={[styles.boxTopRight, light && styles.boxLight, green && styles.boxGreen]} />
-      <View style={[styles.boxBottomLeft, light && styles.boxLight, green && styles.boxGreen]} />
-      <View style={[styles.boxBottomRight, light && styles.boxLight, green && styles.boxGreen]} />
-    </View>
+    <Image
+      accessibilityLabel="GetBuy"
+      resizeMode="contain"
+      source={light ? require('./assets/getbuy-logo-inverse.png') : require('./assets/getbuy-logo.png')}
+      style={compact ? styles.logoLockupCompact : styles.logoLockup}
+    />
   );
-}
-
-function LogoLockup({ light = false, green = false, compact = false }: { light?: boolean; green?: boolean; compact?: boolean }) {
-  return <View style={styles.logoLockup}><BoxMark green={green} light={light} /><Text style={[styles.logoWordmark, light && styles.logoWordmarkLight, green && styles.logoWordmarkGreen, compact && styles.logoWordmarkCompact]}>getBuy</Text></View>;
 }
 
 function SplashScreen() {
@@ -8615,20 +8611,9 @@ const styles = StyleSheet.create({
   splash: { backgroundColor: '#143A73', flex: 1 },
   splashContent: { alignItems: 'center', flex: 1, justifyContent: 'center' },
   splashTagline: { color: '#C9E5FF', fontSize: 16, marginTop: 16 },
-  logoLockup: { alignItems: 'center', flexDirection: 'row' },
-  logoWordmark: { color: '#143A73', fontSize: 42, fontWeight: '800', letterSpacing: -2 },
-  logoWordmarkCompact: { fontSize: 30, letterSpacing: -1.2 },
-  logoWordmarkLight: { color: '#FFF' },
-  logoWordmarkGreen: { color: '#143A73' },
-  boxMark: { height: 44, marginRight: 10, position: 'relative', width: 46 },
-  boxTopLeft: { backgroundColor: '#143A73', height: 13, left: 2, position: 'absolute', top: 2, transform: [{ rotate: '24deg' }], width: 21 },
-  boxTopRight: { backgroundColor: '#143A73', height: 13, position: 'absolute', right: 2, top: 2, transform: [{ rotate: '-24deg' }], width: 21 },
-  boxBottomLeft: { backgroundColor: '#143A73', height: 29, left: 4, position: 'absolute', top: 14, transform: [{ skewY: '24deg' }], width: 20 },
-  boxBottomRight: { backgroundColor: '#143A73', height: 29, position: 'absolute', right: 4, top: 14, transform: [{ skewY: '-24deg' }], width: 20 },
-  boxLight: { backgroundColor: '#D5F0FF' },
-  boxGreen: { backgroundColor: '#143A73' },
-  brandMark: { alignItems: 'center', flexDirection: 'row' },
-  brandMarkText: { color: '#143A73', fontSize: 26, fontWeight: '800', letterSpacing: -1 },
+  logoLockup: { height: 52, width: 220 },
+  logoLockupCompact: { height: 37, width: 156 },
+  brandMark: { height: 45, width: 190 },
   welcomeBrand: { marginBottom: 38, marginTop: 12 },
   welcomeHero: { borderRadius: 28, height: 330, width: '100%' },
   welcomePill: { alignSelf: 'flex-start', backgroundColor: '#D5F0FF', borderRadius: 24, marginTop: 26, paddingHorizontal: 16, paddingVertical: 9 },

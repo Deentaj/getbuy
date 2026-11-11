@@ -10,7 +10,7 @@ a{color:#14539a}
 .app-shell{min-height:100vh}
 .sidebar{position:fixed;inset:0 auto 0 0;width:252px;padding:26px 16px 18px;background:#102e56;color:#fff;display:flex;flex-direction:column;z-index:5}
 .brand{display:flex;align-items:center;gap:10px;color:inherit;text-decoration:none;font-size:19px;font-weight:800;letter-spacing:-.4px;padding:0 10px}
-.brand-mark{width:34px;height:34px;display:grid;place-items:center;border-radius:11px;background:#d9ecff;color:#123963;font-size:17px;font-weight:900}
+.brand-logo{display:block;width:126px;height:30px;object-fit:contain;object-position:left center}
 .brand-light{color:#b9cee4;font-size:14px;font-weight:600}
 .sidebar-label{margin:42px 12px 12px;color:#90a8c2;font-size:10px;font-weight:800;letter-spacing:1.2px}
 .nav-list{display:grid;gap:5px}
@@ -108,6 +108,8 @@ td small{display:block;margin-top:3px;color:#95a1af;font-size:10px}
 .login-screen,.loading-screen{min-height:100vh;display:grid;place-items:center;padding:20px;background:radial-gradient(ellipse at 10% 5%,#e0ecfb 0,transparent 36%),#f3f6fa}
 .login-card{width:min(420px,100%);padding:32px;border:1px solid #e2e8f0;border-radius:15px;background:#fff;box-shadow:0 18px 55px #183d6415}
 .login-brand{padding:0;margin-bottom:31px;color:#143a73}
+.login-brand .brand-logo{width:152px;height:36px}
+.login-brand .brand-light{color:#536a86}
 .login-card .eyebrow{margin-bottom:8px}
 .login-card h1{font-size:25px}
 .login-card>.muted{margin-bottom:22px}
@@ -140,7 +142,6 @@ button,a,input{transition:background-color .18s ease,border-color .18s ease,box-
 :focus-visible{outline:3px solid #76b89b;outline-offset:2px}
 .sidebar{width:264px;padding:29px 17px 20px;background:#102f28;box-shadow:8px 0 30px #102f2810}
 .brand{gap:11px;padding:0 9px;font-size:20px}
-.brand-mark{width:37px;height:37px;border-radius:12px;background:#d9f1e4;color:#124631}
 .brand-light{color:#a7c7b6}
 .sidebar-label{margin:43px 13px 13px;color:#8da99c;letter-spacing:1.45px}
 .nav-list{gap:6px}
@@ -276,7 +277,7 @@ td small{color:#91a097}
 :root{color:#17283f;background:#f3f6fa}
 body{background:#f3f6fa}
 .sidebar{background:#102e56}
-.brand-mark,.avatar{background:#d9ecff;color:#123963}
+.avatar{background:#d9ecff;color:#123963}
 .brand-light{color:#b9cee4}
 .sidebar-label{color:#90a8c2}
 .nav-item{color:#c7d5e5}
