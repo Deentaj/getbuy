@@ -53,6 +53,7 @@ type Role = 'buyer' | 'seller' | 'delivery' | 'admin';
 type Order = {
   id: string;
   dbId: string;
+  assignedDeliveryId: string | null;
   status: string;
   total: number;
   paymentMethod: string;
@@ -1658,7 +1659,7 @@ function AppContent() {
         || typeof event.data.orderId !== 'string') return;
       void (async () => {
         setScreen('orders');
-        setToast('Payment return received. Confirming with Monnify...');
+        setToast('Payment return received. Confirming with Monnify…');
         try {
           const { data, error } = await supabase.functions.invoke('monnify-payment', {
             body: { action: 'verify', order_id: event.data.orderId },
@@ -2061,7 +2062,7 @@ function AppContent() {
     const loadMessages = async () => {
       setIsLoadingChat(true);
       setChatError('');
-      const { data, error } = await supabase.from('order_chat_messages')
+      const { data, error } = await supabase.from('order_rider_chat_messages')
         .select('id, thread_id, sender_id, message, created_at')
         .eq('thread_id', chatThreadId)
         .order('created_at', { ascending: true })
@@ -2089,7 +2090,7 @@ function AppContent() {
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
-        table: 'order_chat_messages',
+        table: 'order_rider_chat_messages',
         filter: `thread_id=eq.${chatThreadId}`,
       }, (payload) => {
         if (!active) return;
@@ -2121,6 +2122,7 @@ function AppContent() {
 
       type BuyerOrderRow = {
         id: string;
+        assigned_delivery_id?: string | null;
         status: string;
         total: number | string;
         payment_method: string;
@@ -2138,7 +2140,7 @@ function AppContent() {
       const withSimulatorColumn = () => {
         let query = supabase
           .from('orders')
-          .select('id, status, total, payment_method, payment_status, payment_simulated, delivery_proof_path, buyer_confirmed_at, delivery_address, delivery_date, delivery_slot, promo_code, promo_discount, created_at')
+          .select('id, assigned_delivery_id, status, total, payment_method, payment_status, payment_simulated, delivery_proof_path, buyer_confirmed_at, delivery_address, delivery_date, delivery_slot, promo_code, promo_discount, created_at')
           .order('created_at', { ascending: false });
         if (role === 'buyer') query = query.eq('buyer_id', userData.id);
         return query;
@@ -2156,7 +2158,8 @@ function AppContent() {
       let orderError = initialOrderQuery.error;
       if (orderError && (orderError.message.includes('payment_simulated') || orderError.message.includes('delivery_proof_path')
         || orderError.message.includes('delivery_date') || orderError.message.includes('delivery_slot')
-        || orderError.message.includes('promo_code') || orderError.message.includes('promo_discount'))
+        || orderError.message.includes('promo_code') || orderError.message.includes('promo_discount')
+        || orderError.message.includes('assigned_delivery_id'))
         && (orderError.code === '42703' || orderError.code === 'PGRST204')) {
         const fallback = await withoutSimulatorColumn();
         orderRows = fallback.data;
@@ -2220,6 +2223,7 @@ function AppContent() {
         return {
         id: order.id,
         dbId: order.id,
+        assignedDeliveryId: order.assigned_delivery_id || null,
         status: order.status,
         total: Number(order.total),
         paymentMethod: order.payment_method,
@@ -2973,9 +2977,9 @@ function AppContent() {
     }
 
     if (notification.event_type === 'new_chat_message'
-      && typeof notification.payload?.store_id === 'string'
+      && notification.payload?.chat_type === 'buyer_rider'
       && notification.order_id) {
-      await openOrderChat(notification.order_id, notification.payload.store_id);
+      await openOrderChat(notification.order_id);
       return;
     }
     if (typeof notification.payload?.product_id === 'string') {
@@ -3188,7 +3192,7 @@ function AppContent() {
     }
   };
 
-  const openOrderChat = async (orderId: string, storeId: string) => {
+  const openOrderChat = async (orderId: string) => {
     if (!currentUserId || !isSupabaseConfigured) {
       setAuthError('Sign in to message the other person on this order.');
       return;
@@ -3196,9 +3200,8 @@ function AppContent() {
     setChatError('');
     setIsLoadingChat(true);
     try {
-      const { data, error } = await supabase.rpc('get_or_create_order_chat', {
+      const { data, error } = await supabase.rpc('get_or_create_order_rider_chat', {
         p_order_id: orderId,
-        p_store_id: storeId,
       });
       if (error) throw error;
       if (typeof data !== 'string' || !data) throw new Error('Could not open the order chat.');
@@ -3220,7 +3223,7 @@ function AppContent() {
     setIsSendingChat(true);
     setChatError('');
     try {
-      const { data, error } = await supabase.rpc('send_order_chat_message', {
+      const { data, error } = await supabase.rpc('send_order_rider_chat_message', {
         p_thread_id: chatThreadId,
         p_message: chatDraft.trim(),
       });
@@ -5397,11 +5400,17 @@ function AppContent() {
             key={notification.id}
             accessibilityRole="button"
             onPress={() => { void openNotification(notification); }}
-            style={[styles.notificationCard, !notification.read_at && styles.notificationCardUnread]}
+            style={[
+              styles.notificationCard,
+              notification.event_type === 'new_order' && styles.notificationNewOrderCard,
+              !notification.read_at && (notification.event_type === 'new_order'
+                ? styles.notificationNewOrderCardUnread
+                : styles.notificationCardUnread),
+            ]}
           >
-            <View style={styles.notificationIcon}>
+            <View style={[styles.notificationIcon, notification.event_type === 'new_order' && styles.notificationNewOrderIcon]}>
               <Ionicons
-                color="#143A73"
+                color={notification.event_type === 'new_order' ? '#0F6B46' : '#143A73'}
                 name={notification.event_type === 'new_order'
                   ? 'bag-handle-outline'
                   : notification.event_type === 'new_chat_message'
@@ -5417,7 +5426,10 @@ function AppContent() {
               />
             </View>
             <View style={styles.notificationCopy}>
-              <Text style={styles.notificationTitle}>{notification.title}</Text>
+              {notification.event_type === 'new_order' ? (
+                <Text style={styles.notificationNewOrderLabel}>NEW ORDER</Text>
+              ) : null}
+              <Text style={[styles.notificationTitle, notification.event_type === 'new_order' && styles.notificationNewOrderTitle]}>{notification.title}</Text>
               <Text style={styles.notificationBody}>{notification.body}</Text>
               <Text style={styles.notificationTime}>{new Date(notification.created_at).toLocaleString()}</Text>
             </View>
@@ -5805,7 +5817,6 @@ function AppContent() {
               {order.promoCode ? <Text style={styles.sellerOrderMeta}>Promo {order.promoCode} · seller discount {formatCurrency(order.promoDiscount)} · estimated product payout {formatCurrency(Math.max(0, order.total - order.promoDiscount))}</Text> : null}
               <Text style={styles.sellerOrderAssignment}>{order.assignedDeliveryId ? 'A delivery partner is assigned.' : 'No delivery partner assigned yet.'} Pickup: {pickupDetails || 'add stall details in Store profile'}.</Text>
               <Text style={styles.sellerOrderMeta}>Scheduled · {order.deliveryDate} · {getDeliveryWindowLabel(order.deliverySlot)}</Text>
-              {sellerStoreId ? <SecondaryButton label="Chat with buyer" onPress={() => void openOrderChat(order.dbId, sellerStoreId)} /> : null}
               {order.status === 'ready' ? (
                 <View style={styles.sellerOrderActionDone}><Text style={styles.sellerOrderActionDoneText}>Waiting for collection</Text></View>
               ) : order.status === 'preparing' && order.orderItems.some((item) => item.substitutionStatus === 'pending') ? (
@@ -6133,6 +6144,9 @@ function AppContent() {
                     )}
                   </View>
 
+                  {order.assignedToCurrent
+                    ? <SecondaryButton label="Chat with buyer" onPress={() => void openOrderChat(order.id)} />
+                    : null}
                   {!order.assignedToCurrent && isReady ? (
                     <Pressable
                       disabled={deliveryStatus !== 'Available'}
@@ -8220,17 +8234,17 @@ function AppContent() {
       <Shell toast={toast}>
         <View style={styles.profileTopBar}>
           <BackButton onPress={() => setScreen(chatReturnScreen)} />
-          <Text style={styles.pageTitleLeft}>Order chat</Text>
+          <Text style={styles.pageTitleLeft}>Buyer–rider chat</Text>
           <View />
         </View>
-        <Text style={styles.pageDescriptionLeft}>Order #{chatOrderId.slice(0, 8).toUpperCase()} · Messages are visible only to this order’s buyer and seller.</Text>
+        <Text style={styles.pageDescriptionLeft}>Order #{chatOrderId.slice(0, 8).toUpperCase()} · Messages are visible only to this order’s buyer and assigned rider.</Text>
         {chatError ? <Text style={styles.authError}>{chatError}</Text> : null}
         {isLoadingChat ? <Text style={styles.emptyText}>Loading messages…</Text> : null}
         {!isLoadingChat && chatMessages.length === 0 ? (
           <View style={styles.emptyState}>
             <View style={styles.emptyIconWrap}><Ionicons color="#1B4D8F" name="chatbubbles-outline" size={40} /></View>
             <Text style={styles.emptyTitle}>Start the conversation</Text>
-            <Text style={styles.emptyText}>Ask about this order or coordinate with the seller.</Text>
+            <Text style={styles.emptyText}>Ask about this order or coordinate with the rider.</Text>
           </View>
         ) : chatMessages.map((message) => (
           <View
@@ -8240,7 +8254,7 @@ function AppContent() {
               { alignSelf: message.sender_id === currentUserId ? 'flex-end' : 'flex-start', maxWidth: '90%' },
             ]}
           >
-            <Text style={styles.productStore}>{message.sender_id === currentUserId ? 'You' : role === 'seller' ? 'Buyer' : 'Seller'}</Text>
+            <Text style={styles.productStore}>{message.sender_id === currentUserId ? 'You' : role === 'delivery' ? 'Buyer' : 'Rider'}</Text>
             <Text style={styles.productName}>{message.message}</Text>
             <Text style={styles.notificationTime}>{new Date(message.created_at).toLocaleString()}</Text>
           </View>
@@ -8323,11 +8337,9 @@ function AppContent() {
                   </View>
                   <Text style={styles.statusText}>{order.status.replace('_', ' ')}</Text>
                 </Pressable>
-                {role === 'buyer' ? (
-                  [...new Map(order.items.filter((item) => item.storeId).map((item) => [item.storeId!, item.store])).entries()].map(([storeId, storeName]) => (
-                    <SecondaryButton key={`${order.dbId}-${storeId}`} label={`Chat with ${storeName}`} onPress={() => void openOrderChat(order.dbId, storeId)} />
-                  ))
-                ) : null}
+                {role === 'buyer' && order.assignedDeliveryId
+                  ? <SecondaryButton label="Chat with rider" onPress={() => void openOrderChat(order.dbId)} />
+                  : null}
                 {role === 'buyer' ? <SecondaryButton label="Reorder these items" onPress={() => void reorderOrder(order)} /> : null}
               </View>
             ))}
@@ -8347,9 +8359,9 @@ function AppContent() {
         <View style={styles.featureCard}>
           <Text style={styles.productName}>Delivery · {selectedOrder.deliveryDate} · {getDeliveryWindowLabel(selectedOrder.deliverySlot)}</Text>
           {selectedOrder.promoCode ? <Text style={styles.productStore}>Promo {selectedOrder.promoCode} · {formatCurrency(selectedOrder.promoDiscount)} off</Text> : null}
-          {[...new Map(selectedOrder.items.filter((item) => item.storeId).map((item) => [item.storeId!, item.store])).entries()].map(([storeId, storeName]) => (
-            <SecondaryButton key={`${selectedOrder.dbId}-${storeId}`} label={`Chat with ${storeName}`} onPress={() => void openOrderChat(selectedOrder.dbId, storeId)} />
-          ))}
+          {role === 'buyer' && selectedOrder.assignedDeliveryId
+            ? <SecondaryButton label="Chat with rider" onPress={() => void openOrderChat(selectedOrder.dbId)} />
+            : null}
           {role === 'buyer' && selectedOrder.status === 'out_for_delivery' ? (
             <SecondaryButton label={isCallingRider ? 'Opening phone…' : 'Call assigned rider'} disabled={isCallingRider} onPress={() => void callAssignedRider(selectedOrder)} />
           ) : null}
@@ -9444,9 +9456,14 @@ const styles = StyleSheet.create({
   toastText: { color: '#FFF', fontSize: 13, fontWeight: '600', textAlign: 'center' },
   notificationCard: { alignItems: 'flex-start', backgroundColor: '#FFF', borderColor: '#D6E4F2', borderRadius: 16, borderWidth: 1, flexDirection: 'row', marginTop: 12, padding: 14 },
   notificationCardUnread: { backgroundColor: '#F3F8FF', borderColor: '#8FB8E8' },
+  notificationNewOrderCard: { borderColor: '#8BC9A5', borderLeftWidth: 4 },
+  notificationNewOrderCardUnread: { backgroundColor: '#EFFAF3', borderColor: '#42A66B' },
   notificationIcon: { alignItems: 'center', backgroundColor: '#D9EAFD', borderRadius: 18, height: 38, justifyContent: 'center', marginRight: 12, width: 38 },
+  notificationNewOrderIcon: { backgroundColor: '#D8F2E2' },
   notificationCopy: { flex: 1 },
   notificationTitle: { color: '#143A73', fontSize: 15, fontWeight: '800' },
+  notificationNewOrderTitle: { color: '#0F6B46' },
+  notificationNewOrderLabel: { color: '#0F6B46', fontSize: 10, fontWeight: '900', letterSpacing: 0.8, marginBottom: 3 },
   notificationBody: { color: '#536A86', fontSize: 13, lineHeight: 19, marginTop: 5 },
   notificationTime: { color: '#7D91A8', fontSize: 11, marginTop: 8 },
   notificationUnreadDot: { backgroundColor: '#1B67BA', borderRadius: 5, height: 9, marginLeft: 8, marginTop: 4, width: 9 },
