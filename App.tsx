@@ -1658,7 +1658,7 @@ function AppContent() {
         || typeof event.data.orderId !== 'string') return;
       void (async () => {
         setScreen('orders');
-        setToast('Payment return received. Confirming with Monnify?');
+        setToast('Payment return received. Confirming with Monnify...');
         try {
           const { data, error } = await supabase.functions.invoke('monnify-payment', {
             body: { action: 'verify', order_id: event.data.orderId },
