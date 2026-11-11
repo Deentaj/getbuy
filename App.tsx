@@ -35,6 +35,9 @@ const isValidEmailOtp = (token: string) => /^\d{6,8}$/.test(token);
 const WEB_PUSH_PUBLIC_KEY = typeof Constants.expoConfig?.extra?.webPushVapidPublicKey === 'string'
   ? Constants.expoConfig.extra.webPushVapidPublicKey
   : undefined;
+const SUPABASE_FUNCTION_ORIGIN = process.env.EXPO_PUBLIC_SUPABASE_URL
+  ? new URL(process.env.EXPO_PUBLIC_SUPABASE_URL).origin
+  : '';
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
@@ -1646,6 +1649,45 @@ function AppContent() {
     navigator.serviceWorker?.addEventListener('message', handleNotificationClick);
     return () => navigator.serviceWorker?.removeEventListener('message', handleNotificationClick);
   }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !currentUserId) return;
+    const handleMonnifyReturn = (event: MessageEvent) => {
+      if (event.origin !== SUPABASE_FUNCTION_ORIGIN
+        || event.data?.type !== 'monnify-payment-return'
+        || typeof event.data.orderId !== 'string') return;
+      void (async () => {
+        setScreen('orders');
+        setToast('Payment return received. Confirming with Monnify?');
+        try {
+          const { data, error } = await supabase.functions.invoke('monnify-payment', {
+            body: { action: 'verify', order_id: event.data.orderId },
+          });
+          if (error) throw error;
+          if (data?.paid !== true) {
+            setToast('Payment is still processing. Open the order to check again shortly.');
+            return;
+          }
+          setOrders((current) => current.map((order) => order.dbId === event.data.orderId
+            ? { ...order, paymentStatus: 'paid' }
+            : order));
+          if (data.cancelled === true) {
+            setToast('Payment completed after this order was cancelled. A manual refund is pending review; please do not pay again.');
+            return;
+          }
+          setToast('Payment confirmed. Your order is being processed.');
+          const { error: notificationError } = await supabase.functions.invoke('notify-order-event', {
+            body: { event_type: 'new_order', order_id: event.data.orderId },
+          });
+          if (notificationError) console.error('Payment was confirmed, but seller push notification dispatch failed.', notificationError);
+        } catch (error: unknown) {
+          setAuthError(getErrorMessage(error, 'Payment returned, but GetBuy could not verify it yet. Check the order again before paying again.'));
+        }
+      })();
+    };
+    window.addEventListener('message', handleMonnifyReturn);
+    return () => window.removeEventListener('message', handleMonnifyReturn);
+  }, [currentUserId]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || !isHydrated || !currentUserId) return;

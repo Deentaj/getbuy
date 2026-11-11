@@ -26,9 +26,10 @@ Deno.serve(async (request) => {
       await verifyMonnifyPayment(env, admin, order);
       const returnUrlValue = requestUrl.searchParams.get('return_url') || 'getbuy://monnify-return';
       if (returnUrlValue === 'browser') {
+        const orderIdJson = JSON.stringify(order.id).replace(/</g, '\\u003c');
         return new Response(
-          '<!doctype html><html lang="en"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Payment update</title><body style="font-family:system-ui,sans-serif;padding:2rem;color:#143A73"><h1>Payment update received</h1><p>Return to GetBuy and check your order status. You can close this page.</p></body></html>',
-          { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+          `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Payment update</title><body style="font-family:system-ui,sans-serif;padding:2rem;color:#143A73"><h1>Payment update received</h1><p>Returning to GetBuy…</p><button onclick="window.close()">Return to GetBuy</button><script>try{window.opener?.postMessage({type:'monnify-payment-return',orderId:${orderIdJson}},'*');setTimeout(()=>window.close(),300)}catch{}</script></body></html>`,
+          { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } },
         );
       }
       let returnUrl: URL;

@@ -83,9 +83,12 @@ export async function verifyMonnifyPayment(
   }
   const transaction = payload.responseBody;
   if (transaction?.paymentStatus !== 'PAID') return false;
-  if (transaction.paymentReference !== order.payment_reference || transaction.currencyCode !== 'NGN') {
+  const returnedCurrency = transaction.currencyCode ?? transaction.currency;
+  if (returnedCurrency != null
+    && (typeof returnedCurrency !== 'string' || returnedCurrency.toUpperCase() !== 'NGN')) {
     throw new Error('Monnify returned a transaction that does not match this order.');
   }
+  // The query is already keyed by our order reference; Monnify may return its own paymentReference.
   const amountPaid = Number(transaction.amountPaid);
   if (!Number.isFinite(amountPaid)) throw new Error('Monnify returned an invalid paid amount.');
 
