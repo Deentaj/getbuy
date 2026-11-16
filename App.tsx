@@ -69,10 +69,15 @@ type Order = {
   createdAt: string;
   items: Product[];
   reviews: StoreReview[];
+  riderReview: RiderReview | null;
   issues: OrderIssue[];
 };
 type StoreReview = {
   storeId: string;
+  rating: number;
+  review: string;
+};
+type RiderReview = {
   rating: number;
   review: string;
 };
@@ -82,6 +87,11 @@ type PublicStoreReview = {
   created_at: string;
   buyer_label: string;
 };
+type PublicStoreRatingSummary = {
+  store_id: string;
+  average_rating: number | string;
+  review_count: number;
+};
 type ChatMessage = {
   id: string;
   thread_id: string;
@@ -89,6 +99,7 @@ type ChatMessage = {
   message: string;
   created_at: string;
 };
+
 type MarketplaceAlert = {
   id: string;
   product_id: string | null;
@@ -112,6 +123,8 @@ type SellerOrderItem = {
   quantity: number;
   unitPrice: number;
   unit: string;
+  blendingRequested: boolean;
+  blendingFee: number;
   substitutionStatus?: string;
 };
 type SellerOrder = {
@@ -237,6 +250,7 @@ type Screen =
   | 'storefront'
   | 'orderChat'
   | 'checkout'
+  | 'orderSuccess'
   | 'tracking'
   | 'notifications'
   | 'support'
@@ -290,7 +304,7 @@ function getNavigationTabs(navigation: AppNavigationState): NavigationTab[] {
     ];
   }
   return [
-    { label: 'Market', icon: 'storefront-outline', destination: 'dashboard', active: ['dashboard', 'saved', 'productDetail', 'storefront', 'notifications', 'support', 'terms'].includes(screen) },
+    { label: 'Home', icon: 'home-outline', destination: 'dashboard', active: ['dashboard', 'saved', 'productDetail', 'storefront', 'notifications', 'support', 'terms'].includes(screen) },
     { label: isGuestBrowsing ? 'Sign in' : 'Orders', icon: isGuestBrowsing ? 'log-in-outline' : 'receipt-outline', destination: isGuestBrowsing ? 'signin' : 'orders', active: screen === 'orders' || screen === 'tracking' || screen === 'orderChat' },
     { label: 'Cart', icon: 'cart-outline', destination: 'cart', active: screen === 'cart' || screen === 'checkout' },
     { label: isGuestBrowsing ? 'Sign up' : 'Profile', icon: 'person-outline', destination: isGuestBrowsing ? 'create' : 'profile', active: screen === 'profile' },
@@ -311,6 +325,7 @@ const screensWithoutNavigation: Screen[] = [
   'sellerSetup',
   'deliverySetup',
   'complete',
+  'orderSuccess',
   'adminSetup',
   'adminDashboard',
 ];
@@ -334,6 +349,10 @@ type Product = {
   isAvailable?: boolean;
   storeVerified?: boolean;
   storeCategory?: string;
+  blendingAvailable?: boolean;
+  blendingFee?: number;
+  blendingRequested?: boolean;
+  blendingFeeApplied?: number;
   substitutionOffer?: { status: string; product: Product };
 };
 type ProductVariant = {
@@ -356,6 +375,7 @@ type CartLine = {
   quantity: number;
   variant?: ProductVariant;
   customQuantity: boolean;
+  blendingRequested: boolean;
 };
 type BulkProductDraft = {
   id: string;
@@ -405,16 +425,63 @@ const PRODUCT_CATEGORIES = [
   'Packaged Goods',
   'Kitchen Utensils',
 ] as const;
-const MARKETPLACE_CATEGORY_FILTERS = [...new Set([
-  'All',
-  'Food',
-  'Vegetables',
-  'Fruits',
-  'Packaged Goods',
-  'Kitchen Utensils',
-  'Restaurants',
-  ...PRODUCT_CATEGORIES,
-])];
+const PACKAGED_PRODUCT_CATEGORIES = [
+  'Rice & Grains',
+  'Beans & Legumes',
+  'Swallow Flours',
+  'Noodles & Pasta',
+  'Cooking Oils',
+  'Seasonings & Spices',
+  'Herbs & Spices',
+  'Cereals & Oats',
+  'Drinks',
+  'Baby Food',
+  'Pantry',
+] as const;
+const MARKETPLACE_CATEGORY_GROUPS = [
+  {
+    label: 'Shop by type',
+    categories: ['All', 'Food', 'Kitchen Utensils', 'Restaurants'],
+  },
+  {
+    label: 'Fresh Grocery Categories',
+    categories: [
+      'Vegetables',
+      'Fruits',
+      'Tubers & Roots',
+      'Beef & Goat',
+      'Poultry & Eggs',
+      'Seafood',
+      'Bread & Bakery',
+      'Dairy & Alternatives',
+      'Other Produce',
+      'Produce',
+    ],
+  },
+  {
+    label: 'Household, Personal Care & Baby',
+    categories: [
+      'Laundry & Dishes',
+      'Household Surface Care',
+      'Hygiene & Toiletries',
+      'Hair & Skin Care',
+      'Baby Care',
+      'Baby Food',
+    ],
+  },
+  {
+    label: 'Restaurant Delivery Categories',
+    categories: [
+      'Rice Dishes',
+      'Soups & Swallows',
+      'Protein Add-ons',
+      'Snacks & Pastries',
+      'Grills & Platters',
+      'Salads',
+      'Platters & Combos',
+    ],
+  },
+] as const;
 const MARKETPLACE_PAGE_SIZE = 24;
 const FOOD_CATEGORIES = new Set([
   'vegetables',
@@ -504,6 +571,8 @@ type ProductWithStoreRow = {
   stock_quantity: number;
   is_available: boolean;
   variant_options?: ProductVariant[] | null;
+  blending_available?: boolean;
+  blending_fee?: number | string;
   stores: Array<{ name: string; category: string }> | { name: string; category: string } | null;
 };
 type MarketplaceProductRow = {
@@ -522,6 +591,8 @@ type MarketplaceProductRow = {
   store_market_area: string;
   store_verified: boolean;
   created_at: string;
+  blending_available?: boolean;
+  blending_fee?: number | string;
 };
 type AdminIssue = {
   id: string;
@@ -753,6 +824,56 @@ function VerificationPhotoPicker({
   );
 }
 
+function CategoryDropdown({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (category: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <View style={styles.categoryDropdown}>
+      <Text style={styles.fieldLabel}>Product category</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: isOpen }}
+        onPress={() => setIsOpen((open) => !open)}
+        style={styles.categoryDropdownTrigger}
+      >
+        <Text style={styles.categoryDropdownValue}>{value || 'Select a category'}</Text>
+        <Ionicons color="#143A73" name={isOpen ? 'chevron-up' : 'chevron-down'} size={20} />
+      </Pressable>
+      {isOpen ? (
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
+          style={styles.categoryDropdownOptions}
+        >
+          {PRODUCT_CATEGORIES.map((category) => (
+            <Pressable
+              accessibilityRole="radio"
+              accessibilityState={{ selected: value === category }}
+              key={category}
+              onPress={() => {
+                onChange(category);
+                setIsOpen(false);
+              }}
+              style={[styles.categoryDropdownOption, value === category && styles.categoryDropdownOptionSelected]}
+            >
+              <Text style={[styles.categoryDropdownOptionText, value === category && styles.categoryDropdownOptionTextSelected]}>
+                {category}
+              </Text>
+              {value === category ? <Ionicons color="#286446" name="checkmark" size={18} /> : null}
+            </Pressable>
+          ))}
+        </ScrollView>
+      ) : null}
+    </View>
+  );
+}
+
 function RiderMap({ location }: { location: RiderLocation }) {
   const webViewRef = useRef<WebView<{}>>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
@@ -884,7 +1005,8 @@ function getProductUnitPrice(product: Product) {
 }
 
 function getCartLineUnitPrice(line: CartLine) {
-  return line.variant?.price ?? getProductUnitPrice(line.product);
+  return (line.variant?.price ?? getProductUnitPrice(line.product))
+    + (line.blendingRequested ? Number(line.product.blendingFee || 0) : 0);
 }
 
 function getCartSubtotal(lines: CartLine[]) {
@@ -948,6 +1070,8 @@ function mapMarketplaceProductRow(product: MarketplaceProductRow): Product {
     variants: product.variant_options || [],
     isAvailable: true,
     storeVerified: product.store_verified,
+    blendingAvailable: product.blending_available || false,
+    blendingFee: Number(product.blending_fee || 0),
   };
 }
 
@@ -969,6 +1093,7 @@ function AppContent() {
   const [profilePhotoVersion, setProfilePhotoVersion] = useState(0);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [isPasswordInvalid, setIsPasswordInvalid] = useState(false);
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [signupPhone, setSignupPhone] = useState('');
@@ -993,11 +1118,14 @@ function AppContent() {
   const [storeDescription, setStoreDescription] = useState('');
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
+  const [isBuyerCategoryDropdownOpen, setIsBuyerCategoryDropdownOpen] = useState(false);
+  const [expandedBuyerCategoryGroup, setExpandedBuyerCategoryGroup] = useState<string | null>(null);
   const [verifiedStoresOnly, setVerifiedStoresOnly] = useState(false);
   const [cart, setCart] = useState<CartLine[]>([]);
   const [selectedCartKeys, setSelectedCartKeys] = useState<Set<string>>(new Set());
   const [selectedProductVariantId, setSelectedProductVariantId] = useState<string | null>(null);
   const [customProductQuantity, setCustomProductQuantity] = useState('');
+  const [productDetailBlendingRequested, setProductDetailBlendingRequested] = useState(false);
   const [isPromoSheetVisible, setIsPromoSheetVisible] = useState(false);
   const [productDetail, setProductDetail] = useState<Product | null>(null);
   const [productDetailReturnScreen, setProductDetailReturnScreen] = useState<Screen>('dashboard');
@@ -1005,6 +1133,8 @@ function AppContent() {
   const [storefrontReviews, setStorefrontReviews] = useState<PublicStoreReview[]>([]);
   const [isLoadingStorefrontReviews, setIsLoadingStorefrontReviews] = useState(false);
   const [storefrontReviewsError, setStorefrontReviewsError] = useState('');
+  const [storeRatingSummaries, setStoreRatingSummaries] = useState<Record<string, { average: number; count: number }>>({});
+  const [storeRatingError, setStoreRatingError] = useState('');
   const [orders, setOrders] = useState<Order[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [saved, setSaved] = useState<Product[]>([]);
@@ -1034,9 +1164,13 @@ function AppContent() {
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState('');
   const [isCallingRider, setIsCallingRider] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'bank_transfer' | 'card' | 'cash_on_delivery'>('cash_on_delivery');
+  const [paymentMethod, setPaymentMethod] = useState<'bank_transfer' | 'card'>('bank_transfer');
   const [usePaymentSimulator, setUsePaymentSimulator] = useState(false);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [isEditingCheckoutAddress, setIsEditingCheckoutAddress] = useState(false);
+  const [orderSuccessOrderId, setOrderSuccessOrderId] = useState('');
+  const [orderSuccessMessage, setOrderSuccessMessage] = useState('');
+  const [orderSuccessPaid, setOrderSuccessPaid] = useState(false);
   const [isConfirmingReceived, setIsConfirmingReceived] = useState(false);
   const [isCheckingPayment, setIsCheckingPayment] = useState(false);
   const [paymentCheckMessage, setPaymentCheckMessage] = useState('');
@@ -1053,6 +1187,8 @@ function AppContent() {
   const [newProductUnit, setNewProductUnit] = useState('kg');
   const [newProductCategory, setNewProductCategory] = useState('Produce');
   const [newProductDescription, setNewProductDescription] = useState('');
+  const [newProductBlendingAvailable, setNewProductBlendingAvailable] = useState(false);
+  const [newProductBlendingFee, setNewProductBlendingFee] = useState('');
   const [newProductAvailable, setNewProductAvailable] = useState(true);
   const [bulkProductDrafts, setBulkProductDrafts] = useState<BulkProductDraft[]>([]);
   const [bulkProductError, setBulkProductError] = useState('');
@@ -1128,6 +1264,7 @@ function AppContent() {
   const [isSavingLocation, setIsSavingLocation] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [authError, setAuthError] = useState('');
+  const passwordShake = useRef(new Animated.Value(0)).current;
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [isSavingStore, setIsSavingStore] = useState(false);
   const [sellerStoreId, setSellerStoreId] = useState<string | null>(null);
@@ -1262,8 +1399,10 @@ function AppContent() {
               const existing = restoredByKey.get(key);
               restoredByKey.set(key, existing
                 ? { ...existing, quantity: existing.quantity + 1 }
-                : { key, product: entry, quantity: 1, customQuantity: false });
+                : { key, product: entry, quantity: 1, customQuantity: false, blendingRequested: false });
+              if (existing) existing.blendingRequested ??= false;
             });
+            restoredByKey.forEach((line) => { line.blendingRequested ??= false; });
             const restoredCart = [...restoredByKey.values()];
             setCart(restoredCart);
             setSelectedCartKeys(new Set(restoredCart.map((line) => line.key)));
@@ -1677,10 +1816,18 @@ function AppContent() {
             return;
           }
           setToast('Payment confirmed. Your order is being processed.');
+          setOrderSuccessOrderId(event.data.orderId);
+          setOrderSuccessPaid(true);
           const { error: notificationError } = await supabase.functions.invoke('notify-order-event', {
             body: { event_type: 'new_order', order_id: event.data.orderId },
           });
-          if (notificationError) console.error('Payment was confirmed, but seller push notification dispatch failed.', notificationError);
+          if (notificationError) {
+            console.error('Payment was confirmed, but seller push notification dispatch failed.', notificationError);
+          }
+          setOrderSuccessMessage(notificationError
+            ? 'Your payment is confirmed and remains protected until you confirm delivery. Seller alerts are available in-app; push delivery is pending setup.'
+            : 'Your payment is confirmed. The seller has been notified, and payment remains protected until you confirm delivery.');
+          setScreen('orderSuccess');
         } catch (error: unknown) {
           setAuthError(getErrorMessage(error, 'Payment returned, but GetBuy could not verify it yet. Check the order again before paying again.'));
         }
@@ -1829,6 +1976,24 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, [search]);
 
+  const mapMarketplaceProducts = async (rows: MarketplaceProductRow[]) => {
+    const productIds = rows.map((row) => row.id);
+    if (!productIds.length) return rows.map(mapMarketplaceProductRow);
+    const { data, error } = await supabase.from('products')
+      .select('id, blending_available, blending_fee')
+      .in('id', productIds);
+    if (error) throw error;
+    const blendingOptions = new Map((data || []).map((product) => [
+      product.id,
+      { available: product.blending_available, fee: Number(product.blending_fee || 0) },
+    ]));
+    return rows.map((row) => {
+      const product = mapMarketplaceProductRow(row);
+      const options = blendingOptions.get(row.id);
+      return options ? { ...product, blendingAvailable: options.available, blendingFee: options.fee } : product;
+    });
+  };
+
   useEffect(() => {
     if (!isHydrated || !isSupabaseConfigured || screen !== 'dashboard') return;
 
@@ -1858,7 +2023,7 @@ function AppContent() {
 
       const rows = (data || []) as MarketplaceProductRow[];
       const page = rows.slice(0, MARKETPLACE_PAGE_SIZE);
-      setRemoteProducts(page.map(mapMarketplaceProductRow));
+      setRemoteProducts(await mapMarketplaceProducts(page));
       const cursorRow = page[page.length - 1];
       setMarketplaceCursor(cursorRow ? { createdAt: cursorRow.created_at, id: cursorRow.id } : null);
       setHasMoreProducts(rows.length > MARKETPLACE_PAGE_SIZE);
@@ -1900,9 +2065,11 @@ function AppContent() {
 
       const rows = (data || []) as MarketplaceProductRow[];
       const page = rows.slice(0, MARKETPLACE_PAGE_SIZE);
+      const products = await mapMarketplaceProducts(page);
+      if (marketplaceRequestId.current !== requestId) return;
       setRemoteProducts((current) => {
         const existingIds = new Set(current.map((product) => product.id));
-        return [...current, ...page.map(mapMarketplaceProductRow).filter((product) => !existingIds.has(product.id))];
+        return [...current, ...products.filter((product) => !existingIds.has(product.id))];
       });
       const cursorRow = page[page.length - 1];
       if (cursorRow) setMarketplaceCursor({ createdAt: cursorRow.created_at, id: cursorRow.id });
@@ -1939,6 +2106,39 @@ function AppContent() {
     });
     return () => { active = false; };
   }, [isSupabaseConfigured, productDetail?.id, productDetail?.storeId, screen]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    const storeIds = [...new Set([
+      ...remoteProducts.map((product) => product.storeId).filter((storeId): storeId is string => Boolean(storeId)),
+      ...(productDetail?.storeId ? [productDetail.storeId] : []),
+    ])];
+    if (!storeIds.length) {
+      setStoreRatingSummaries({});
+      setStoreRatingError('');
+      return;
+    }
+
+    let active = true;
+    const loadStoreRatingSummaries = async () => {
+      setStoreRatingError('');
+      const { data, error } = await supabase.rpc('get_public_store_rating_summaries', { p_store_ids: storeIds });
+      if (error) throw error;
+      if (!active) return;
+      const summaries = (data || []) as PublicStoreRatingSummary[];
+      setStoreRatingSummaries(Object.fromEntries(summaries.map((summary) => [
+        summary.store_id,
+        { average: Number(summary.average_rating), count: Number(summary.review_count) },
+      ])));
+    };
+    loadStoreRatingSummaries().catch((error: unknown) => {
+      if (active) {
+        setStoreRatingError(getErrorMessage(error, 'Unable to load store ratings.'));
+        console.error('Unable to load marketplace store rating summaries.', error);
+      }
+    });
+    return () => { active = false; };
+  }, [isSupabaseConfigured, productDetail?.storeId, remoteProducts]);
 
   useEffect(() => {
     if (!isHydrated || role !== 'buyer' || !currentUserId || !isSupabaseConfigured) return;
@@ -2174,23 +2374,26 @@ function AppContent() {
       const ids = orderRows.map((order) => order.id);
       const { data: itemRows, error: itemError } = await supabase
         .from('order_items')
-        .select('id, order_id, product_id, quantity, unit_price, variant_id, variant_label, unit_snapshot, custom_quantity')
+        .select('id, order_id, product_id, quantity, unit_price, variant_id, variant_label, unit_snapshot, custom_quantity, blending_requested, blending_fee')
         .in('order_id', ids);
       if (itemError) throw itemError;
       const itemIds = (itemRows || []).map((item) => item.id);
       const [
         { data: substitutionRows, error: substitutionsError },
         { data: reviewRows, error: reviewsError },
+        { data: riderReviewRows, error: riderReviewsError },
         { data: issueRows, error: issuesError },
       ] = await Promise.all([
         itemIds.length
           ? supabase.from('order_item_substitutions').select('order_item_id, substitute_product_id, status').in('order_item_id', itemIds)
           : Promise.resolve({ data: [], error: null }),
         supabase.from('store_reviews').select('order_id, store_id, rating, review').in('order_id', ids),
+        supabase.from('rider_reviews').select('order_id, rating, review').in('order_id', ids),
         supabase.from('order_issues').select('id, order_id, issue_type, description, status, admin_note, created_at').in('order_id', ids).order('created_at', { ascending: false }),
       ]);
       if (substitutionsError) throw substitutionsError;
       if (reviewsError) throw reviewsError;
+      if (riderReviewsError) throw riderReviewsError;
       if (issuesError) throw issuesError;
       const substitutionByItemId = new Map((substitutionRows || []).map((offer) => [offer.order_item_id, offer]));
       const productIds = [...new Set([
@@ -2210,6 +2413,7 @@ function AppContent() {
 
       const productsById = new Map((productRows || []).map((product) => [product.id, product]));
       const storesById = new Map((storeRows || []).map((store) => [store.id, store.name]));
+      const riderReviewsByOrderId = new Map((riderReviewRows || []).map((review) => [review.order_id, review]));
       const ordersWithProof = await Promise.all(orderRows.map(async (order) => {
         const proofPath = 'delivery_proof_path' in order ? order.delivery_proof_path : null;
         let deliveryProofUrl: string | undefined;
@@ -2220,6 +2424,7 @@ function AppContent() {
           if (signedUrlError) throw signedUrlError;
           deliveryProofUrl = signedUrl.signedUrl;
         }
+        const riderReview = riderReviewsByOrderId.get(order.id);
         return {
         id: order.id,
         dbId: order.id,
@@ -2248,6 +2453,8 @@ function AppContent() {
             orderVariantId: item.variant_id || undefined,
             orderVariantLabel: item.variant_label || undefined,
             orderCustomQuantity: item.custom_quantity === true,
+            blendingRequested: item.blending_requested === true,
+            blendingFeeApplied: Number(item.blending_fee || 0),
             storeId: product?.store_id,
             name: `${product?.name || 'Product no longer available'}${item.variant_label ? ` · ${item.variant_label}` : ''}`,
             store: product ? storesById.get(product.store_id) || 'Local seller' : '',
@@ -2277,6 +2484,9 @@ function AppContent() {
           rating: Number(review.rating),
           review: review.review,
         })),
+        riderReview: riderReview
+          ? { rating: Number(riderReview.rating), review: riderReview.review }
+          : null,
         issues: (issueRows || []).filter((issue) => issue.order_id === order.id).map((issue) => ({
           id: issue.id,
           issueType: issue.issue_type,
@@ -2320,7 +2530,7 @@ function AppContent() {
         .maybeSingle();
       if (verificationError) throw verificationError;
       const { data, error } = await supabase.from('products')
-        .select('id, name, price, unit, category, image_url, description, stock_quantity, is_available, variant_options')
+        .select('id, name, price, unit, category, image_url, description, stock_quantity, is_available, variant_options, blending_available, blending_fee')
         .eq('store_id', store.id)
         .order('created_at', { ascending: false });
       if (error) throw error;
@@ -2342,6 +2552,8 @@ function AppContent() {
         unit: product.unit,
         variants: product.variant_options || [],
         isAvailable: product.is_available,
+        blendingAvailable: product.blending_available,
+        blendingFee: Number(product.blending_fee || 0),
       })));
     };
     loadSellerInventory().catch((error: unknown) => {
@@ -2411,7 +2623,7 @@ function AppContent() {
           .map((row) => [row.order_id, { code: row.promo_code, discount: Number(row.promo_discount) }]),
       );
       const { data: itemRows, error: itemError } = orderIds.length
-        ? await supabase.from('order_items')        .select('id, order_id, product_id, quantity, unit_price, variant_id, variant_label, unit_snapshot, custom_quantity').in('order_id', orderIds)
+        ? await supabase.from('order_items')        .select('id, order_id, product_id, quantity, unit_price, variant_id, variant_label, unit_snapshot, custom_quantity, blending_requested, blending_fee').in('order_id', orderIds)
         : { data: [], error: null };
       if (itemError) throw itemError;
       const itemIds = (itemRows || []).map((item) => item.id);
@@ -2443,6 +2655,8 @@ function AppContent() {
           unit: item.unit_snapshot || productUnits.get(item.product_id) || 'item',
           quantity: Number(item.quantity),
           unitPrice: Number(item.unit_price),
+          blendingRequested: item.blending_requested === true,
+          blendingFee: Number(item.blending_fee || 0),
           substitutionStatus: offerStatuses.get(item.id),
         })),
         status: order.status,
@@ -3000,7 +3214,7 @@ function AppContent() {
     setScreen(role === 'seller' ? 'sellerDashboard' : role === 'delivery' ? 'deliveryDashboard' : 'orders');
   };
 
-  const addToCart = (product: Product, quantity = 1, variant?: ProductVariant, customQuantity = false) => {
+  const addToCart = (product: Product, quantity = 1, variant?: ProductVariant, customQuantity = false, blendingRequested = false) => {
     if (!product.id) {
       setDashboardNotice('This product is not available from the marketplace.');
       return false;
@@ -3014,7 +3228,12 @@ function AppContent() {
       : undefined);
     const stock = selectedVariant?.stock ?? Number(product.quantity || 0);
     const key = `${product.id}:${selectedVariant?.id || 'base'}`;
-    const alreadyInCart = cart.find((line) => line.key === key)?.quantity || 0;
+    const existingLine = cart.find((line) => line.key === key);
+    if (existingLine && existingLine.blendingRequested !== blendingRequested) {
+      setDashboardNotice('This item is already in your cart with a different preparation choice. Change it in your cart before adding more.');
+      return false;
+    }
+    const alreadyInCart = existingLine?.quantity || 0;
     if (!Number.isFinite(quantity) || quantity <= 0 || Math.round(quantity * 100) !== quantity * 100) {
       setDashboardNotice('Enter a quantity greater than zero with no more than two decimal places.');
       return false;
@@ -3025,7 +3244,7 @@ function AppContent() {
     }
     setPromoDiscount(0);
     setPromoMessage('');
-    const line: CartLine = { key, product, quantity, variant: selectedVariant, customQuantity };
+    const line: CartLine = { key, product, quantity, variant: selectedVariant, customQuantity, blendingRequested };
     setCart((current) => current.some((item) => item.key === key)
       ? current.map((item) => item.key === key ? { ...item, quantity: item.quantity + quantity } : item)
       : [...current, line]);
@@ -3036,6 +3255,7 @@ function AppContent() {
 
   const openProductDetail = (product: Product, returnScreen: Screen) => {
     setProductDetail(product);
+    setProductDetailBlendingRequested(false);
     setSelectedProductVariantId(Number(product.quantity || 0) > 0
       ? null
       : product.variants?.find((variant) => variant.stock > 0)?.id || null);
@@ -3084,6 +3304,22 @@ function AppContent() {
     });
   };
 
+  const toggleCartLineBlending = (lineKey: string) => {
+    setCart((current) => current.map((line) => line.key === lineKey
+      ? { ...line, blendingRequested: !line.blendingRequested }
+      : line));
+    setPromoDiscount(0);
+    setPromoMessage('');
+  };
+
+  const saveCartLineForLater = async (line: CartLine) => {
+    if (!saved.some((product) => product.id === line.product.id)) {
+      const savedSuccessfully = await toggleSavedProduct(line.product);
+      if (!savedSuccessfully) return;
+    }
+    removeCartLine(line.key);
+  };
+
   const toggleCartLineSelected = (lineKey: string) => {
     setSelectedCartKeys((current) => {
       const next = new Set(current);
@@ -3102,17 +3338,19 @@ function AppContent() {
     setSaved((current) => removing
       ? current.filter((item) => item.id !== product.id)
       : [...current, product]);
-    if (role !== 'buyer' || !currentUserId || !product.id || !isSupabaseConfigured) return;
+    if (role !== 'buyer' || !currentUserId || !product.id || !isSupabaseConfigured) return true;
     try {
       const { error } = removing
         ? await supabase.from('product_favorites').delete().eq('buyer_id', currentUserId).eq('product_id', product.id)
         : await supabase.from('product_favorites').insert({ buyer_id: currentUserId, product_id: product.id });
       if (error) throw error;
+      return true;
     } catch (error: unknown) {
       setSaved((current) => removing
         ? [...current, product]
         : current.filter((item) => item.id !== product.id));
       setDashboardNotice(getErrorMessage(error, 'Unable to save this product to your account.'));
+      return false;
     }
   };
 
@@ -3304,7 +3542,7 @@ function AppContent() {
         throw new Error('Some products from this order are no longer available to reorder.');
       }
       const { data, error } = await supabase.from('products')
-        .select('id, store_id, name, price, unit, category, image_url, description, stock_quantity, is_available, variant_options, stores(name, category)')
+        .select('id, store_id, name, price, unit, category, image_url, description, stock_quantity, is_available, variant_options, blending_available, blending_fee, stores(name, category)')
         .in('id', productIds);
       if (error) throw error;
       const currentProducts = (data || []) as ProductWithStoreRow[];
@@ -3312,6 +3550,9 @@ function AppContent() {
       const unavailable: string[] = [];
       const productsToAdd: CartLine[] = [];
       const alreadyInCart = new Map<string, number>();
+      const blendedCartKeys = new Set(cart
+        .filter((line) => line.blendingRequested && line.product.id)
+        .map((line) => `${line.product.id}:${line.variant?.id || 'base'}`));
       cart.forEach((line) => {
         if (line.product.id) {
           const key = `${line.product.id}:${line.variant?.id || 'base'}`;
@@ -3325,15 +3566,20 @@ function AppContent() {
         const key = `${item.id || ''}:${selectedVariant?.id || 'base'}`;
         const inCart = alreadyInCart.get(key) || 0;
         const availableStock = selectedVariant?.stock ?? Number(product?.stock_quantity || 0);
+        if (blendedCartKeys.has(key)) {
+          unavailable.push(`${item.name} (change its blending choice in your cart first)`);
+          continue;
+        }
         if (!product || !product.is_available || (item.orderVariantId && !selectedVariant) || availableStock < quantity + inCart) {
           unavailable.push(item.name);
           continue;
         }
         productsToAdd.push({
-          key: `${product.id}:${selectedVariant?.id || 'base'}:reorder:${Date.now()}:${productsToAdd.length}`,
+          key: `${product.id}:${selectedVariant?.id || 'base'}`,
           quantity,
           variant: selectedVariant,
           customQuantity: item.orderCustomQuantity ?? true,
+          blendingRequested: false,
           product: {
             id: product.id,
             storeId: product.store_id,
@@ -3348,6 +3594,8 @@ function AppContent() {
             unit: product.unit,
             isAvailable: product.is_available,
             variants: product.variant_options || [],
+            blendingAvailable: product.blending_available === true,
+            blendingFee: Number(product.blending_fee || 0),
           },
         });
         alreadyInCart.set(key, inCart + quantity);
@@ -3357,7 +3605,14 @@ function AppContent() {
       }
       setPromoDiscount(0);
       setPromoMessage('');
-      setCart((current) => [...current, ...productsToAdd]);
+      setCart((current) => {
+        const merged = new Map(current.map((line) => [line.key, line]));
+        productsToAdd.forEach((line) => {
+          const existing = merged.get(line.key);
+          merged.set(line.key, existing ? { ...existing, quantity: existing.quantity + line.quantity } : line);
+        });
+        return [...merged.values()];
+      });
       setSelectedCartKeys((current) => new Set([...current, ...productsToAdd.map((line) => line.key)]));
       setToast(`${productsToAdd.length} product${productsToAdd.length === 1 ? '' : 's'} added to your cart.`);
       setScreen('cart');
@@ -3441,6 +3696,29 @@ function AppContent() {
       setToast('Thanks for reviewing this store.');
     } catch (error: unknown) {
       setAuthError(getErrorMessage(error, 'Unable to submit your review.'));
+    } finally {
+      setSubmittingReviewKey('');
+    }
+  };
+
+  const submitRiderReview = async (order: Order) => {
+    const key = `${order.id}:rider`;
+    const draft = reviewDrafts[key] || { rating: order.riderReview?.rating || 5, review: order.riderReview?.review || '' };
+    setSubmittingReviewKey(key);
+    setAuthError('');
+    try {
+      const { error } = await supabase.rpc('submit_rider_review', {
+        p_order_id: order.id,
+        p_rating: draft.rating,
+        p_review: draft.review.trim(),
+      });
+      if (error) throw error;
+      const updatedOrder = { ...order, riderReview: { rating: draft.rating, review: draft.review.trim() } };
+      setSelectedOrder(updatedOrder);
+      setOrders((current) => current.map((entry) => entry.id === order.id ? updatedOrder : entry));
+      setToast('Thanks for rating your rider.');
+    } catch (error: unknown) {
+      setAuthError(getErrorMessage(error, 'Unable to submit your rider rating.'));
     } finally {
       setSubmittingReviewKey('');
     }
@@ -3620,21 +3898,51 @@ function AppContent() {
 
   const signIn = async () => {
     setAuthError('');
+    setIsPasswordInvalid(false);
     if (!isSupabaseConfigured) {
       setAuthError('Sign in requires Supabase configuration.');
       return;
     }
     setIsSubmittingAuth(true);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
+      const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+      if (!SUPABASE_FUNCTION_ORIGIN || !anonKey) {
+        throw new Error('Sign-in requires Supabase configuration.');
+      }
+      const response = await fetch(`${SUPABASE_FUNCTION_ORIGIN}/functions/v1/account-login`, {
+        method: 'POST',
+        headers: {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      const result = await response.json() as {
+        error?: unknown;
+        code?: unknown;
+        session?: { access_token?: unknown; refresh_token?: unknown };
+      };
+      if (!response.ok) {
+        const message = typeof result.error === 'string' ? result.error : 'Unable to sign in.';
+        const signInError = new Error(message);
+        if (typeof result.code === 'string') Object.assign(signInError, { code: result.code });
+        throw signInError;
+      }
+      if (typeof result.session?.access_token !== 'string' || typeof result.session.refresh_token !== 'string') {
+        throw new Error('The sign-in service did not return a valid session.');
+      }
+      const { data, error } = await supabase.auth.setSession({
+        access_token: result.session.access_token,
+        refresh_token: result.session.refresh_token,
       });
       if (error) throw error;
+      const signedInUser = data.user;
+      if (!signedInUser) throw new Error('The sign-in service did not return a user.');
       const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', data.user.id)
+        .eq('id', signedInUser.id)
         .single();
       if (profileError) throw profileError;
       await saveRememberedLogin(email);
@@ -3646,7 +3954,7 @@ function AppContent() {
         setScreen('adminSetup');
         return;
       }
-      setCurrentUserId(data.user.id);
+      setCurrentUserId(signedInUser.id);
       setRole(signedInRole);
       setName(profile.full_name || '');
       setSignupPhone(profile.phone_number || '');
@@ -3664,7 +3972,22 @@ function AppContent() {
         setScreen(signedInRole === 'seller' ? 'sellerDashboard' : signedInRole === 'delivery' ? 'deliveryDashboard' : 'dashboard');
       }
     } catch (error: unknown) {
-      setAuthError(error instanceof Error ? error.message : 'Unable to sign in.');
+      const message = getErrorMessage(error, 'Unable to sign in.');
+      const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+        ? error.code.toLowerCase()
+        : '';
+      if (code === 'invalid_credentials' || /invalid login credentials|invalid email or password/i.test(message)) {
+        setIsPasswordInvalid(true);
+        passwordShake.setValue(0);
+        Animated.sequence([
+          Animated.timing(passwordShake, { toValue: -10, duration: 55, useNativeDriver: true }),
+          Animated.timing(passwordShake, { toValue: 10, duration: 55, useNativeDriver: true }),
+          Animated.timing(passwordShake, { toValue: -7, duration: 45, useNativeDriver: true }),
+          Animated.timing(passwordShake, { toValue: 7, duration: 45, useNativeDriver: true }),
+          Animated.timing(passwordShake, { toValue: 0, duration: 40, useNativeDriver: true }),
+        ]).start();
+      }
+      setAuthError(message);
     } finally {
       setIsSubmittingAuth(false);
     }
@@ -3803,11 +4126,14 @@ function AppContent() {
     imageMimeType: string;
     description: string;
     available: boolean;
+    blendingAvailable?: boolean;
+    blendingFee?: string;
     variants?: ProductVariantDraft[];
   }, productId: string | null = null) => {
     if (!isSupabaseConfigured) throw new Error('Product listings require Supabase configuration.');
     const stockQuantity = Number(input.quantity);
     const price = Number(input.price);
+    const blendingFee = Number(input.blendingFee || 0);
     if (!input.name.trim() || !input.price.trim() || !input.quantity.trim() || !input.category) {
       throw new Error('Add a product name, category, price, and stock quantity first.');
     }
@@ -3816,6 +4142,9 @@ function AppContent() {
     }
     if (!Number.isFinite(stockQuantity) || stockQuantity < 0 || Math.round(stockQuantity * 100) !== stockQuantity * 100) {
       throw new Error('Enter a valid stock quantity with no more than two decimal places.');
+    }
+    if (!Number.isFinite(blendingFee) || blendingFee < 0 || Math.round(blendingFee * 100) !== blendingFee * 100) {
+      throw new Error('Enter a valid blending fee with no more than two decimal places.');
     }
     const variantNames = new Set<string>();
     const variants = (input.variants || []).map((variant) => {
@@ -3870,6 +4199,8 @@ function AppContent() {
       description: input.description.trim() || null,
       stock_quantity: stockQuantity,
       variant_options: variants,
+      blending_available: input.blendingAvailable === true,
+      blending_fee: input.blendingAvailable === true ? blendingFee : 0,
       is_available: (stockQuantity > 0 || variants.some((variant) => variant.stock > 0)) && input.available,
     };
     const productRequest = productId
@@ -3889,6 +4220,8 @@ function AppContent() {
       unit: input.unit,
       variants,
       description: input.description.trim() || undefined,
+      blendingAvailable: input.blendingAvailable === true,
+      blendingFee: input.blendingAvailable === true ? blendingFee : 0,
       isAvailable: (stockQuantity > 0 || variants.some((variant) => variant.stock > 0)) && input.available,
     } satisfies Product;
   };
@@ -3908,6 +4241,8 @@ function AppContent() {
         imageMimeType: newProductImageMimeType,
         description: newProductDescription,
         available: newProductAvailable,
+        blendingAvailable: newProductBlendingAvailable,
+        blendingFee: newProductBlendingFee,
         variants: newProductVariants,
       }, editingProductId);
       setInventory((current) => editingProductId
@@ -3923,6 +4258,8 @@ function AppContent() {
       setNewProductUnit('kg');
       setNewProductCategory('Produce');
       setNewProductDescription('');
+      setNewProductBlendingAvailable(false);
+      setNewProductBlendingFee('');
       setNewProductAvailable(true);
       setEditingProductId(null);
       setScreen('sellerDashboard');
@@ -4068,6 +4405,8 @@ function AppContent() {
     setNewProductUnit(product.unit || 'kg');
     setNewProductCategory(product.category || 'Produce');
     setNewProductDescription(product.description || '');
+    setNewProductBlendingAvailable(product.blendingAvailable ?? false);
+    setNewProductBlendingFee(product.blendingAvailable ? String(product.blendingFee || 0) : '');
     setNewProductAvailable(product.isAvailable ?? false);
     setScreen('addProduct');
   };
@@ -4268,6 +4607,7 @@ function AppContent() {
       product_id: line.product.id,
       variant_id: line.variant?.id || null,
       quantity: line.quantity,
+      blending_requested: line.blendingRequested,
     }));
     if (cartItems.length === 0 || cartItems.some((item) => !item.product_id)) {
       setAuthError('Select at least one valid cart item before placing the order.');
@@ -4286,7 +4626,7 @@ function AppContent() {
       return;
     }
     let monnifyPopup: Window | null = null;
-    if (!usePaymentSimulator && paymentMethod !== 'cash_on_delivery' && Platform.OS === 'web') {
+    if (!usePaymentSimulator && Platform.OS === 'web') {
       monnifyPopup = window.open('about:blank', '_blank');
       if (!monnifyPopup) {
         setAuthError('Allow pop-ups for GetBuy to open the Monnify checkout page, then try again.');
@@ -4327,103 +4667,74 @@ function AppContent() {
         return;
       }
 
-      if (paymentMethod !== 'cash_on_delivery') {
-        const monnifyReturnUrl = Platform.OS === 'web'
-          ? 'browser'
-          : ExpoLinking.createURL('monnify-return');
-        const { data, error } = await supabase.functions.invoke('monnify-payment', {
-          body: {
-            action: 'checkout',
-            return_url: monnifyReturnUrl,
-            delivery_address: location.trim(),
-            cart_items: cartItems,
-            payment_method: paymentMethod,
-            delivery_slot: deliverySlot,
-            promo_code: promoDiscount > 0 ? promoCode.trim() : null,
-            delivery_date: deliveryDate,
-            loyalty_points: 0,
-          },
-        });
-        if (error) throw error;
-        if (typeof data?.order_id !== 'string' || typeof data?.checkout_url !== 'string') {
-          throw new Error('Monnify did not return a valid checkout session.');
-        }
-        createdOrderId = data.order_id;
-        removeCheckedOutLines();
-        setSelectedOrder(null);
+      const monnifyReturnUrl = Platform.OS === 'web'
+        ? 'browser'
+        : ExpoLinking.createURL('monnify-return');
+      const { data, error } = await supabase.functions.invoke('monnify-payment', {
+        body: {
+          action: 'checkout',
+          return_url: monnifyReturnUrl,
+          delivery_address: location.trim(),
+          cart_items: cartItems,
+          payment_method: paymentMethod,
+          delivery_slot: deliverySlot,
+          promo_code: promoDiscount > 0 ? promoCode.trim() : null,
+          delivery_date: deliveryDate,
+          loyalty_points: 0,
+        },
+      });
+      if (error) throw error;
+      if (typeof data?.order_id !== 'string' || typeof data?.checkout_url !== 'string') {
+        throw new Error('Monnify did not return a valid checkout session.');
+      }
+      createdOrderId = data.order_id;
+      removeCheckedOutLines();
+      setSelectedOrder(null);
 
-        if (monnifyPopup) {
-          monnifyPopup.location.href = data.checkout_url;
-          monnifyPopup.focus();
-          setToast('Monnify checkout opened in a new tab. Return to your order and check payment after completing it.');
-          setScreen('orders');
-          return;
-        }
-
-        await WebBrowser.openAuthSessionAsync(data.checkout_url, monnifyReturnUrl);
-        const { data: verification, error: verifyError } = await supabase.functions.invoke('monnify-payment', {
-          body: { action: 'verify', order_id: createdOrderId },
-        });
-        if (verifyError) throw verifyError;
-        if (verification?.paid !== true) {
-          setToast('Payment is still pending. You can check its status from your order details.');
-          setScreen('orders');
-          return;
-        }
-        if (verification.cancelled === true) {
-          setToast('Payment completed after this order was cancelled. A manual refund has been opened; please do not pay again.');
-          setScreen('orders');
-          return;
-        }
-
-        let pushDispatchFailed = false;
-        try {
-          const { error: notificationError } = await supabase.functions.invoke('notify-order-event', {
-            body: { event_type: 'new_order', order_id: createdOrderId },
-          });
-          if (notificationError) throw notificationError;
-        } catch (notificationError: unknown) {
-          pushDispatchFailed = true;
-          console.error('Payment was confirmed, but seller push notification dispatch failed.', notificationError);
-        }
-        setAuthError('');
-        setToast(pushDispatchFailed
-          ? 'Payment confirmed. Seller alerts are available in-app; push delivery is pending setup.'
-          : 'Payment confirmed. Seller has been notified.');
+      if (monnifyPopup) {
+        monnifyPopup.location.href = data.checkout_url;
+        monnifyPopup.focus();
+        setToast('Monnify checkout opened in a new tab. Return to your order and check payment after completing it.');
         setScreen('orders');
         return;
       }
 
-      const { data: orderId, error } = await supabase.rpc('create_marketplace_order_with_cart_options', {
-        p_delivery_address: location.trim(),
-        p_payment_method: 'cash_on_delivery',
-        p_cart_items: cartItems,
-        p_delivery_slot: deliverySlot,
-        p_promo_code: promoDiscount > 0 ? promoCode.trim() : null,
-        p_delivery_date: deliveryDate,
-        p_loyalty_points: 0,
+      await WebBrowser.openAuthSessionAsync(data.checkout_url, monnifyReturnUrl);
+      const { data: verification, error: verifyError } = await supabase.functions.invoke('monnify-payment', {
+        body: { action: 'verify', order_id: createdOrderId },
       });
-      if (error) throw error;
-      if (typeof orderId !== 'string' || !orderId) {
-        throw new Error('The order was not confirmed. Please refresh your orders before trying again.');
+      if (verifyError) throw verifyError;
+      if (verification?.paid !== true) {
+        setToast('Payment is still pending. You can check its status from your order details.');
+        setScreen('orders');
+        return;
       }
+      if (verification.cancelled === true) {
+        setToast('Payment completed after this order was cancelled. A manual refund has been opened; please do not pay again.');
+        setScreen('orders');
+        return;
+      }
+
       let pushDispatchFailed = false;
       try {
         const { error: notificationError } = await supabase.functions.invoke('notify-order-event', {
-          body: { event_type: 'new_order', order_id: orderId },
+          body: { event_type: 'new_order', order_id: createdOrderId },
         });
         if (notificationError) throw notificationError;
       } catch (notificationError: unknown) {
         pushDispatchFailed = true;
-        console.error('Order was placed, but seller push notification dispatch failed.', notificationError);
+        console.error('Payment was confirmed, but seller push notification dispatch failed.', notificationError);
       }
-      removeCheckedOutLines();
-      setSelectedOrder(null);
       setAuthError('');
       setToast(pushDispatchFailed
-        ? 'Order placed. Seller alerts are available in-app; push delivery is pending setup.'
-        : 'Order placed. Seller has been notified. Pay cash on delivery.');
-      setScreen('orders');
+        ? 'Payment confirmed. Seller alerts are available in-app; push delivery is pending setup.'
+        : 'Payment confirmed. Seller has been notified.');
+      setOrderSuccessOrderId(createdOrderId);
+      setOrderSuccessPaid(true);
+      setOrderSuccessMessage(pushDispatchFailed
+        ? 'Your payment is confirmed and remains protected until you confirm delivery. Seller alerts are available in-app; push delivery is pending setup.'
+        : 'Your payment is confirmed. The seller has been notified, and payment remains protected until you confirm delivery.');
+      setScreen('orderSuccess');
     } catch (error: unknown) {
       if (monnifyPopup && !createdOrderId) monnifyPopup.close();
       if (createdOrderId) {
@@ -5403,14 +5714,21 @@ function AppContent() {
             style={[
               styles.notificationCard,
               notification.event_type === 'new_order' && styles.notificationNewOrderCard,
+              notification.event_type === 'order_ready' && styles.notificationDeliveryCard,
               !notification.read_at && (notification.event_type === 'new_order'
                 ? styles.notificationNewOrderCardUnread
-                : styles.notificationCardUnread),
+                : notification.event_type === 'order_ready'
+                  ? styles.notificationDeliveryCardUnread
+                  : styles.notificationCardUnread),
             ]}
           >
-            <View style={[styles.notificationIcon, notification.event_type === 'new_order' && styles.notificationNewOrderIcon]}>
+            <View style={[
+              styles.notificationIcon,
+              notification.event_type === 'new_order' && styles.notificationNewOrderIcon,
+              notification.event_type === 'order_ready' && styles.notificationDeliveryIcon,
+            ]}>
               <Ionicons
-                color={notification.event_type === 'new_order' ? '#0F6B46' : '#143A73'}
+                color={notification.event_type === 'new_order' || notification.event_type === 'order_ready' ? '#0F6B46' : '#143A73'}
                 name={notification.event_type === 'new_order'
                   ? 'bag-handle-outline'
                   : notification.event_type === 'new_chat_message'
@@ -5428,12 +5746,20 @@ function AppContent() {
             <View style={styles.notificationCopy}>
               {notification.event_type === 'new_order' ? (
                 <Text style={styles.notificationNewOrderLabel}>NEW ORDER</Text>
+              ) : notification.event_type === 'order_ready' ? (
+                <Text style={styles.notificationNewOrderLabel}>PICKUP AVAILABLE</Text>
               ) : null}
-              <Text style={[styles.notificationTitle, notification.event_type === 'new_order' && styles.notificationNewOrderTitle]}>{notification.title}</Text>
+              <Text style={[
+                styles.notificationTitle,
+                (notification.event_type === 'new_order' || notification.event_type === 'order_ready') && styles.notificationNewOrderTitle,
+              ]}>{notification.title}</Text>
               <Text style={styles.notificationBody}>{notification.body}</Text>
               <Text style={styles.notificationTime}>{new Date(notification.created_at).toLocaleString()}</Text>
             </View>
-            {!notification.read_at ? <View style={styles.notificationUnreadDot} /> : null}
+            {!notification.read_at ? <View style={[
+              styles.notificationUnreadDot,
+              notification.event_type === 'order_ready' && styles.notificationDeliveryUnreadDot,
+            ]} /> : null}
           </Pressable>
         ))}
         {marketplaceAlerts.length ? (
@@ -5784,6 +6110,11 @@ function AppContent() {
                 return (
                   <View key={item.id} style={styles.sellerSubstitutionItem}>
                     <Text style={styles.sellerOrderItem}>{item.quantity} × {item.name}</Text>
+                    {item.blendingRequested ? (
+                      <Text style={styles.sellerSubstitutionStatus}>
+                        Buyer requested blending · {formatCurrency(item.blendingFee)} per unit
+                      </Text>
+                    ) : null}
                     {item.substitutionStatus === 'pending'
                       ? <Text style={styles.sellerSubstitutionStatus}>Waiting for buyer approval</Text>
                       : item.substitutionStatus === 'accepted'
@@ -7066,7 +7397,20 @@ function AppContent() {
           </View>
           <Text style={styles.rememberLoginLabel}>Remember my email on this device</Text>
         </Pressable>
-        <Field label="Password" value={password} onChangeText={setPassword} placeholder="••••••••••" secureTextEntry={!showPassword} />
+        <Animated.View style={{ transform: [{ translateX: passwordShake }] }}>
+          <Field
+            label="Password"
+            value={password}
+            onChangeText={(value) => {
+              setPassword(value);
+              setIsPasswordInvalid(false);
+              if (isPasswordInvalid) setAuthError('');
+            }}
+            placeholder="••••••••••"
+            secureTextEntry={!showPassword}
+            invalid={isPasswordInvalid}
+          />
+        </Animated.View>
         <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.showPassword}><Text style={styles.showPasswordText}>{showPassword ? 'Hide password' : 'Show password'}</Text></Pressable>
         <Pressable onPress={() => { setRecoveryError(''); setRecoveryNotice(''); setScreen('forgotPassword'); }} hitSlop={8}>
           <Text style={styles.forgotPassword}>Forgot password?</Text>
@@ -7318,20 +7662,10 @@ function AppContent() {
               </Pressable>
             </View>
             <Field label="Product name" value={draft.name} onChangeText={(name) => setBulkProductDrafts((current) => current.map((item) => item.id === draft.id ? { ...item, name } : item))} placeholder="e.g. Yam, apples, tomatoes" />
-            <Text style={styles.fieldLabel}>Choose a category</Text>
-            <View style={styles.choiceRow}>
-              {PRODUCT_CATEGORIES.map((item) => (
-                <Pressable
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected: draft.category === item }}
-                  key={item}
-                  onPress={() => setBulkProductDrafts((current) => current.map((product) => product.id === draft.id ? { ...product, category: item } : product))}
-                  style={[styles.choicePill, draft.category === item && styles.choicePillSelected]}
-                >
-                  <Text style={[styles.choicePillText, draft.category === item && styles.choicePillTextSelected]}>{item}</Text>
-                </Pressable>
-              ))}
-            </View>
+            <CategoryDropdown
+              value={draft.category}
+              onChange={(category) => setBulkProductDrafts((current) => current.map((product) => product.id === draft.id ? { ...product, category } : product))}
+            />
             <View style={styles.sellerProductFormRow}>
               <View style={styles.sellerProductFormColumn}>
                 <Field label="Price (₦)" value={draft.price} onChangeText={(price) => setBulkProductDrafts((current) => current.map((item) => item.id === draft.id ? { ...item, price: price.replace(/[^0-9.]/g, '') } : item))} placeholder="e.g. 4500" keyboardType="decimal-pad" />
@@ -7484,15 +7818,33 @@ function AppContent() {
           </View>
         ))}
 
-        <Text style={styles.fieldLabel}>Product category</Text>
-        <View style={styles.choiceRow}>
-          {PRODUCT_CATEGORIES.map((item) => (
-            <Pressable key={item} onPress={() => setNewProductCategory(item)} style={[styles.choicePill, newProductCategory === item && styles.choicePillSelected]}>
-              <Text style={[styles.choicePillText, newProductCategory === item && styles.choicePillTextSelected]}>{item}</Text>
-            </Pressable>
-          ))}
-        </View>
+        <CategoryDropdown value={newProductCategory} onChange={setNewProductCategory} />
         <Field label="Short description" value={newProductDescription} onChangeText={setNewProductDescription} placeholder="Tell buyers what makes it fresh" multiline />
+        <Pressable
+          accessibilityRole="switch"
+          accessibilityState={{ checked: newProductBlendingAvailable }}
+          onPress={() => setNewProductBlendingAvailable((available) => !available)}
+          style={styles.sellerAvailabilityRow}
+        >
+          <View style={styles.sellerAvailabilityCopy}>
+            <Text style={styles.sellerAvailabilityTitle}>Offer blending</Text>
+            <Text style={styles.sellerAvailabilityHint}>Let buyers request this product prepared/blended before delivery.</Text>
+          </View>
+          <View style={[styles.sellerAvailabilityPill, newProductBlendingAvailable && styles.sellerAvailabilityPillOn]}>
+            <Text style={[styles.sellerAvailabilityPillText, newProductBlendingAvailable && styles.sellerAvailabilityPillTextOn]}>
+              {newProductBlendingAvailable ? '✓ ON' : 'OFF'}
+            </Text>
+          </View>
+        </Pressable>
+        {newProductBlendingAvailable ? (
+          <Field
+            label="Blending fee per unit (₦)"
+            value={newProductBlendingFee}
+            onChangeText={(value) => setNewProductBlendingFee(value.replace(/[^0-9.]/g, ''))}
+            placeholder="e.g. 500"
+            keyboardType="decimal-pad"
+          />
+        ) : null}
         <Pressable
           accessibilityRole="switch"
           accessibilityState={{ checked: newProductAvailable && Number(newProductQuantity) > 0 }}
@@ -7580,26 +7932,131 @@ function AppContent() {
           {category !== 'All' ? (
             <Pressable
               accessibilityRole="button"
-              onPress={() => setCategory('All')}
+              onPress={() => {
+                setCategory('All');
+                setIsBuyerCategoryDropdownOpen(false);
+                setExpandedBuyerCategoryGroup(null);
+              }}
               style={styles.marketFilterClear}
             >
               <Text style={styles.marketFilterClearText}>Clear</Text>
             </Pressable>
           ) : null}
         </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryWrap}>
-          {MARKETPLACE_CATEGORY_FILTERS.map((item) => (
-            <Pressable
-              accessibilityRole="radio"
-              accessibilityState={{ selected: category === item }}
-              key={item}
-              onPress={() => setCategory(item)}
-              style={[styles.marketChip, category === item && styles.marketChipActive]}
-            >
-              <Text style={[styles.marketChipText, category === item && styles.marketChipTextActive]}>{item}</Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: isBuyerCategoryDropdownOpen }}
+          onPress={() => setIsBuyerCategoryDropdownOpen((open) => {
+            const nextOpen = !open;
+            if (nextOpen) {
+              const selectedGroup = MARKETPLACE_CATEGORY_GROUPS.find((group) => group.categories.some((item) => item === category));
+              if (category === 'Packaged Goods' || PACKAGED_PRODUCT_CATEGORIES.some((item) => item === category)) {
+                setExpandedBuyerCategoryGroup('Packaged Goods');
+              } else {
+                setExpandedBuyerCategoryGroup(selectedGroup?.label || null);
+              }
+            }
+            return nextOpen;
+          })}
+          style={styles.marketCategoryDropdown}
+        >
+          <Text style={styles.marketCategoryDropdownValue}>{category}</Text>
+          <Ionicons color="#143A73" name={isBuyerCategoryDropdownOpen ? 'chevron-up' : 'chevron-down'} size={20} />
+        </Pressable>
+        {isBuyerCategoryDropdownOpen ? (
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+            style={styles.marketCategoryDropdownOptions}
+          >
+            {MARKETPLACE_CATEGORY_GROUPS.map((group) => (
+              <View key={group.label}>
+                {group.label === 'Shop by type' ? (
+                  <View>
+                    <Text style={styles.marketCategoryDropdownGroupLabel}>{group.label}</Text>
+                    {group.categories.map((item) => (
+                      <Pressable
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected: category === item }}
+                        key={item}
+                        onPress={() => {
+                          setCategory(item);
+                          setIsBuyerCategoryDropdownOpen(false);
+                        }}
+                        style={[styles.marketCategoryDropdownOption, category === item && styles.marketCategoryDropdownOptionSelected]}
+                      >
+                        <Text style={[styles.marketCategoryDropdownOptionText, category === item && styles.marketCategoryDropdownOptionTextSelected]}>{item}</Text>
+                        {category === item ? <Ionicons color="#286446" name="checkmark" size={18} /> : null}
+                      </Pressable>
+                    ))}
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: expandedBuyerCategoryGroup === 'Packaged Goods' }}
+                      onPress={() => setExpandedBuyerCategoryGroup((expanded) => expanded === 'Packaged Goods' ? null : 'Packaged Goods')}
+                      style={styles.marketCategoryDropdownOption}
+                    >
+                      <Text style={styles.marketCategoryDropdownOptionText}>Packaged Goods</Text>
+                      <Ionicons color="#143A73" name={expandedBuyerCategoryGroup === 'Packaged Goods' ? 'chevron-up' : 'chevron-down'} size={18} />
+                    </Pressable>
+                    {expandedBuyerCategoryGroup === 'Packaged Goods' ? (
+                      <View style={styles.marketCategoryDropdownNested}>
+                        {['Packaged Goods', ...PACKAGED_PRODUCT_CATEGORIES].map((item) => {
+                          const label = item === 'Packaged Goods' ? 'All packaged goods' : item;
+                          return (
+                            <Pressable
+                              accessibilityRole="radio"
+                              accessibilityState={{ selected: category === item }}
+                              key={item}
+                              onPress={() => {
+                                setCategory(item);
+                                setIsBuyerCategoryDropdownOpen(false);
+                              }}
+                              style={[styles.marketCategoryDropdownOption, styles.marketCategoryDropdownNestedOption, category === item && styles.marketCategoryDropdownOptionSelected]}
+                            >
+                              <Text style={[styles.marketCategoryDropdownOptionText, category === item && styles.marketCategoryDropdownOptionTextSelected]}>{label}</Text>
+                              {category === item ? <Ionicons color="#286446" name="checkmark" size={18} /> : null}
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    ) : null}
+                  </View>
+                ) : (
+                  <View>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: expandedBuyerCategoryGroup === group.label }}
+                      onPress={() => setExpandedBuyerCategoryGroup((expanded) => expanded === group.label ? null : group.label)}
+                      style={styles.marketCategoryDropdownOption}
+                    >
+                      <Text style={styles.marketCategoryDropdownOptionText}>{group.label}</Text>
+                      <Ionicons color="#143A73" name={expandedBuyerCategoryGroup === group.label ? 'chevron-up' : 'chevron-down'} size={18} />
+                    </Pressable>
+                    {expandedBuyerCategoryGroup === group.label ? (
+                      <View style={styles.marketCategoryDropdownNested}>
+                        {group.categories.map((item) => (
+                          <Pressable
+                            accessibilityRole="radio"
+                            accessibilityState={{ selected: category === item }}
+                            key={item}
+                            onPress={() => {
+                              setCategory(item);
+                              setIsBuyerCategoryDropdownOpen(false);
+                            }}
+                            style={[styles.marketCategoryDropdownOption, styles.marketCategoryDropdownNestedOption, category === item && styles.marketCategoryDropdownOptionSelected]}
+                          >
+                            <Text style={[styles.marketCategoryDropdownOptionText, category === item && styles.marketCategoryDropdownOptionTextSelected]}>{item}</Text>
+                            {category === item ? <Ionicons color="#286446" name="checkmark" size={18} /> : null}
+                          </Pressable>
+                        ))}
+                      </View>
+                    ) : null}
+                  </View>
+                )}
+              </View>
+            ))}
+          </ScrollView>
+        ) : null}
         <Pressable
           accessibilityRole="checkbox"
           accessibilityState={{ checked: verifiedStoresOnly }}
@@ -7623,6 +8080,7 @@ function AppContent() {
         </View>
 
         {marketError ? <Text style={styles.authError}>{marketError}</Text> : null}
+        {storeRatingError ? <Text style={styles.authError}>{storeRatingError}</Text> : null}
         {marketProducts.length === 0 && !isLoadingProducts ? (
           <View style={styles.emptyState}>
             <View style={styles.emptyIconWrap}><Ionicons color="#1B4D8F" name="location-outline" size={38} /></View>
@@ -7653,6 +8111,14 @@ function AppContent() {
                     <Text style={styles.marketProductStore}>{product.store}</Text>
                     {product.storeVerified ? <StoreVerifiedMark /> : null}
                   </View>
+                  {product.storeId ? (
+                    <Text style={styles.marketProductRating}>
+                      {storeRatingSummaries[product.storeId]
+                        ? `★ ${storeRatingSummaries[product.storeId].average.toFixed(1)} · ${storeRatingSummaries[product.storeId].count} rating${storeRatingSummaries[product.storeId].count === 1 ? '' : 's'}`
+                        : '☆ No ratings yet'}
+                    </Text>
+                  ) : null}
+                  {product.blendingAvailable ? <Text style={styles.marketProductPreparation}>Blending available</Text> : null}
                   <Text style={styles.marketProductMeta}>{product.variants?.length ? `${product.quantity} ${product.unit} base · ${product.variants.length} size option${product.variants.length === 1 ? '' : 's'}` : `${product.quantity} ${product.unit} available`}</Text>
                 </View>
               </Pressable>
@@ -7717,9 +8183,11 @@ function AppContent() {
 
   if (screen === 'storefront' && productDetail?.storeId) {
     const storeProducts = remoteProducts.filter((product) => matchesLocalMarket(product, area, location) && product.storeId === productDetail.storeId);
-    const averageRating = storefrontReviews.length
+    const ratingSummary = storeRatingSummaries[productDetail.storeId];
+    const averageRating = ratingSummary?.average ?? (storefrontReviews.length
       ? storefrontReviews.reduce((sum, review) => sum + Number(review.rating), 0) / storefrontReviews.length
-      : 0;
+      : 0);
+    const ratingCount = ratingSummary?.count ?? storefrontReviews.length;
     return (
       <Shell toast={toast}>
         <BackButton onPress={() => setScreen(storefrontReturnScreen)} />
@@ -7730,8 +8198,9 @@ function AppContent() {
             {productDetail.storeVerified ? <StoreVerifiedMark /> : null}
           </View>
           <Text style={styles.storefrontRating}>
-            {storefrontReviews.length ? `★ ${averageRating.toFixed(1)} · ${storefrontReviews.length} review${storefrontReviews.length === 1 ? '' : 's'}` : 'No reviews yet'}
+            {ratingCount ? `★ ${averageRating.toFixed(1)} · ${ratingCount} review${ratingCount === 1 ? '' : 's'}` : 'No reviews yet'}
           </Text>
+          {storeRatingError ? <Text style={styles.authError}>{storeRatingError}</Text> : null}
           <Text style={styles.pageDescriptionLeft}>Reviews from buyers who completed an order with this store.</Text>
         </View>
 
@@ -7797,9 +8266,11 @@ function AppContent() {
       && product.category === productDetail.category).slice(0, 4);
     const sameStoreProducts = remoteProducts.filter((product) => matchesLocalMarket(product, area, location) && product.id !== productDetail.id
       && product.storeId === productDetail.storeId).slice(0, 4);
-    const storeAverage = storefrontReviews.length
+    const storeRatingSummary = productDetail.storeId ? storeRatingSummaries[productDetail.storeId] : undefined;
+    const storeAverage = storeRatingSummary?.average ?? (storefrontReviews.length
       ? storefrontReviews.reduce((sum, review) => sum + Number(review.rating), 0) / storefrontReviews.length
-      : 0;
+      : 0);
+    const storeReviewCount = storeRatingSummary?.count ?? storefrontReviews.length;
     return (
       <Shell toast={toast}>
         <View style={styles.detailTopBar}>
@@ -7831,9 +8302,10 @@ function AppContent() {
             {productDetail.storeVerified ? <StoreVerifiedMark /> : null}
           </View>
           <View style={styles.detailRatingRow}>
-            <Text style={styles.detailRatingStars}>{storefrontReviews.length ? `★ ${storeAverage.toFixed(1)}` : '☆ No ratings yet'}</Text>
-            <Text style={styles.detailRatingCaption}>{storefrontReviews.length ? `${storefrontReviews.length} verified store review${storefrontReviews.length === 1 ? '' : 's'}` : 'Store rating'}</Text>
+            <Text style={styles.detailRatingStars}>{storeReviewCount ? `★ ${storeAverage.toFixed(1)}` : '☆ No ratings yet'}</Text>
+            <Text style={styles.detailRatingCaption}>{storeReviewCount ? `${storeReviewCount} verified store review${storeReviewCount === 1 ? '' : 's'}` : 'Store rating'}</Text>
           </View>
+          {storeRatingError ? <Text style={styles.authError}>{storeRatingError}</Text> : null}
           <Text style={styles.marketProductPrice}>{formatCurrency(selectedPrice)} / {selectedVariant?.unit || productDetail.unit}</Text>
           <View style={styles.detailMetaRow}>
             <View style={styles.detailMetaItem}><Text style={styles.detailMetaLabel}>CATEGORY</Text><Text style={styles.detailMetaValue}>{productDetail.category}</Text></View>
@@ -7866,16 +8338,36 @@ function AppContent() {
               style={styles.customQuantityInput}
               value={customProductQuantity}
             />
-            <Text style={styles.detailPriceEstimate}>Estimated total · {formatCurrency(selectedPrice * requestedQuantity)}</Text>
+            <Text style={styles.detailPriceEstimate}>Estimated total · {formatCurrency((selectedPrice + (productDetailBlendingRequested ? Number(productDetail.blendingFee || 0) : 0)) * requestedQuantity)}</Text>
           </View>
+          {productDetail.blendingAvailable ? (
+            <Pressable
+              accessibilityRole="switch"
+              accessibilityState={{ checked: productDetailBlendingRequested }}
+              onPress={() => setProductDetailBlendingRequested((requested) => !requested)}
+              style={styles.blendingOptionRow}
+            >
+              <View style={styles.productCopy}>
+                <Text style={styles.productName}>Have it blended</Text>
+                <Text style={styles.productStore}>{Number(productDetail.blendingFee || 0) > 0
+                  ? `Seller preparation fee · ${formatCurrency(Number(productDetail.blendingFee))} per unit`
+                  : 'No extra preparation charge'}</Text>
+              </View>
+              <View style={[styles.sellerAvailabilityPill, productDetailBlendingRequested && styles.sellerAvailabilityPillOn]}>
+                <Text style={[styles.sellerAvailabilityPillText, productDetailBlendingRequested && styles.sellerAvailabilityPillTextOn]}>
+                  {productDetailBlendingRequested ? '✓ YES' : 'NO'}
+                </Text>
+              </View>
+            </Pressable>
+          ) : null}
           <View style={styles.detailSection}>
             <Text style={styles.detailSectionTitle}>About this product</Text>
             <Text style={styles.pageDescriptionLeft}>{productDetail.description || 'The seller has not added a product description yet.'}</Text>
             <Text style={styles.detailMetaValue}>{productDetail.category} · Sold by {productDetail.store}</Text>
           </View>
           <PrimaryButton
-            label={`Add to cart · ${formatCurrency(selectedPrice * requestedQuantity)}`}
-            onPress={() => addToCart(productDetail, requestedQuantity, selectedVariant, !selectedVariant)}
+            label={`Add to cart · ${formatCurrency((selectedPrice + (productDetailBlendingRequested ? Number(productDetail.blendingFee || 0) : 0)) * requestedQuantity)}`}
+            onPress={() => addToCart(productDetail, requestedQuantity, selectedVariant, !selectedVariant, productDetailBlendingRequested)}
             disabled={!productDetail.isAvailable || selectedStock <= 0 || requestedQuantity <= 0 || !Number.isFinite(requestedQuantity)
               || Math.round(requestedQuantity * 100) !== requestedQuantity * 100
               || productCartQuantity + requestedQuantity > selectedStock}
@@ -7938,14 +8430,38 @@ function AppContent() {
 
   if (screen === 'cart') {
     const cartSubtotal = getCartSubtotal(selectedCartLines);
-    const cartCategories = [...new Set(cart.map((line) => line.product.category || 'Products'))];
+    const cartDeliveryFee = getDeliveryFee(location);
+    const cartServiceFees = 200;
+    const cartTotal = selectedCartLines.length
+      ? Math.max(0, cartSubtotal - promoDiscount) + cartDeliveryFee + cartServiceFees
+      : 0;
     return (
-      <Shell toast={toast}>
+      <Shell
+        toast={toast}
+        footer={cart.length ? (
+          <View style={styles.shoppingStickyFooter}>
+            <View style={styles.shoppingFooterTotal}>
+              <Text style={styles.shoppingFooterLabel}>ORDER TOTAL</Text>
+              <Text style={styles.shoppingFooterAmount}>{formatCurrency(cartTotal)}</Text>
+              <Text style={styles.shoppingFooterHint}>{selectedCartLines.length} {selectedCartLines.length === 1 ? 'item' : 'items'} selected</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              disabled={!selectedCartLines.length}
+              onPress={() => setScreen('checkout')}
+              style={[styles.shoppingFooterButton, !selectedCartLines.length && styles.shoppingFooterButtonDisabled]}
+            >
+              <Text style={styles.shoppingFooterButtonText}>{selectedCartLines.length ? 'Continue to checkout' : 'Select items'}</Text>
+              {selectedCartLines.length ? <Ionicons color="#FFF" name="arrow-forward" size={19} /> : null}
+            </Pressable>
+          </View>
+        ) : undefined}
+      >
         <BackButton onPress={goBack} />
         <View style={styles.cartHeader}>
           <View style={styles.cartHeaderCopy}>
             <Text style={styles.pageTitleLeft}>Your cart</Text>
-            <Text style={styles.pageDescriptionLeft}>Review your items before placing your order.</Text>
+            <Text style={styles.pageDescriptionLeft}>Review your items before checkout.</Text>
           </View>
           <View style={styles.cartCountBadge}>
             <Ionicons color="#143A73" name="bag-handle-outline" size={18} />
@@ -7965,49 +8481,71 @@ function AppContent() {
           <>
             <View style={styles.cartSelectAllRow}>
               <Text style={styles.productStore}>{selectedCartLines.length} selected</Text>
-              <Pressable onPress={() => setSelectedCartKeys(selectedCartKeys.size === cart.length ? new Set() : new Set(cart.map((line) => line.key)))}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setSelectedCartKeys(selectedCartKeys.size === cart.length ? new Set() : new Set(cart.map((line) => line.key)))}
+              >
                 <Text style={styles.marketProductLink}>{selectedCartKeys.size === cart.length ? 'Clear selection' : 'Select all'}</Text>
               </Pressable>
             </View>
-            {cartCategories.map((group) => (
-              <View key={group} style={styles.cartCategoryGroup}>
-                <Text style={styles.cartCategoryTitle}>{group}</Text>
-                {cart.filter((line) => (line.product.category || 'Products') === group).map((line) => {
-                  const product = line.product;
-                  const selected = selectedCartKeys.has(line.key);
-                  const unit = line.variant?.unit || product.unit || 'item';
-                  const available = line.variant?.stock ?? Number(product.quantity || 0);
-                  const unitPrice = getCartLineUnitPrice(line);
-                  return (
-                    <View key={line.key} style={[styles.cartRow, !selected && styles.cartRowUnselected]}>
-                      <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={`${selected ? 'Deselect' : 'Select'} ${product.name}`} onPress={() => toggleCartLineSelected(line.key)} style={[styles.cartCheckButton, selected && styles.cartCheckButtonSelected]}>
-                        {selected ? <Ionicons color="#FFF" name="checkmark" size={16} /> : null}
-                      </Pressable>
-                      <CartProductImage imageUrl={product.imageUrl} />
-                      <View style={styles.cartItemDetails}>
-                        <Text style={styles.productName}>{product.name}{line.variant ? ` · ${line.variant.name}` : ''}</Text>
-                        <Text style={styles.productStore}>{product.store}</Text>
-                        <Text style={styles.cartProductMeta}>{unit} · {formatCurrency(unitPrice)} / {unit}</Text>
-                        <Text style={styles.cartLineTotal}>{formatCurrency(unitPrice * line.quantity)}</Text>
-                        <Text style={styles.cartAvailability}>{available} {line.variant ? `${line.variant.name} packs` : unit} available</Text>
-                        <View style={styles.cartQuantityControls}>
-                          <Pressable accessibilityLabel={`Decrease ${product.name} quantity`} accessibilityRole="button" onPress={() => removeOneFromCart(line.key)} style={styles.cartQuantityButton}>
-                            <Ionicons color="#143A73" name="remove" size={19} />
-                          </Pressable>
-                          <Text accessibilityLabel={`Quantity ${line.quantity} ${unit}`} style={styles.cartQuantityText}>{line.quantity} {unit}</Text>
-                          <Pressable accessibilityLabel={`Increase ${product.name} quantity`} accessibilityRole="button" disabled={available <= 0 || line.quantity >= available} onPress={() => addToCart(product, 1, line.variant, line.customQuantity)} style={[styles.cartQuantityButton, (available <= 0 || line.quantity >= available) && styles.cartQuantityButtonDisabled]}>
-                            <Ionicons color="#143A73" name="add" size={19} />
-                          </Pressable>
-                          <Pressable accessibilityLabel={`Remove ${product.name} from cart`} accessibilityRole="button" onPress={() => removeCartLine(line.key)} style={styles.cartRemoveButton}>
-                            <Ionicons color="#A43F3F" name="trash-outline" size={19} />
-                          </Pressable>
+            {cart.map((line) => {
+              const product = line.product;
+              const selected = selectedCartKeys.has(line.key);
+              const unit = line.variant?.unit || product.unit || 'item';
+              const available = line.variant?.stock ?? Number(product.quantity || 0);
+              const unitPrice = getCartLineUnitPrice(line);
+              const isSaved = saved.some((item) => item.id === product.id);
+              return (
+                <View key={line.key} style={[styles.cartRow, !selected && styles.cartRowUnselected]}>
+                  <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected }} accessibilityLabel={`${selected ? 'Deselect' : 'Select'} ${product.name}`} onPress={() => toggleCartLineSelected(line.key)} style={[styles.cartCheckButton, selected && styles.cartCheckButtonSelected]}>
+                    {selected ? <Ionicons color="#FFF" name="checkmark" size={16} /> : null}
+                  </Pressable>
+                  <CartProductImage imageUrl={product.imageUrl} />
+                  <View style={styles.cartItemDetails}>
+                    <Text style={styles.productName}>{product.name}{line.variant ? ` · ${line.variant.name}` : ''}</Text>
+                    <Text style={styles.productStore}>{product.store}</Text>
+                    {product.blendingAvailable ? (
+                      <Pressable
+                        accessibilityRole="switch"
+                        accessibilityState={{ checked: line.blendingRequested }}
+                        onPress={() => toggleCartLineBlending(line.key)}
+                        style={styles.cartBlendingOption}
+                      >
+                        <Text style={styles.cartBlendingLabel}>
+                          {line.blendingRequested
+                            ? `Blending requested · ${Number(product.blendingFee || 0) > 0 ? `${formatCurrency(Number(product.blendingFee))} per unit` : 'no extra charge'}`
+                            : 'Request blending'}
+                        </Text>
+                        <View style={[styles.sellerAvailabilityPill, line.blendingRequested && styles.sellerAvailabilityPillOn]}>
+                          <Text style={[styles.sellerAvailabilityPillText, line.blendingRequested && styles.sellerAvailabilityPillTextOn]}>
+                            {line.blendingRequested ? '✓ YES' : 'NO'}
+                          </Text>
                         </View>
+                      </Pressable>
+                    ) : null}
+                    <Text style={styles.cartLineTotal}>{formatCurrency(unitPrice * line.quantity)}</Text>
+                    <View style={styles.cartItemActions}>
+                      <View style={styles.cartQuantityControls}>
+                        <Pressable accessibilityLabel={`Decrease ${product.name} quantity`} accessibilityRole="button" onPress={() => removeOneFromCart(line.key)} style={styles.cartQuantityButton}>
+                          <Ionicons color="#143A73" name="remove" size={19} />
+                        </Pressable>
+                        <Text accessibilityLabel={`Quantity ${line.quantity} ${unit}`} style={styles.cartQuantityText}>{line.quantity}</Text>
+                        <Pressable accessibilityLabel={`Increase ${product.name} quantity`} accessibilityRole="button" disabled={available <= 0 || line.quantity >= available} onPress={() => addToCart(product, 1, line.variant, line.customQuantity, line.blendingRequested)} style={[styles.cartQuantityButton, (available <= 0 || line.quantity >= available) && styles.cartQuantityButtonDisabled]}>
+                          <Ionicons color="#143A73" name="add" size={19} />
+                        </Pressable>
                       </View>
+                      <Pressable accessibilityRole="button" onPress={() => void saveCartLineForLater(line)} style={styles.cartActionLink}>
+                        <Text style={styles.cartSaveText}>{isSaved ? 'Saved' : 'Save for later'}</Text>
+                      </Pressable>
+                      <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${product.name} from cart`} onPress={() => removeCartLine(line.key)} style={styles.cartActionLink}>
+                        <Text style={styles.cartRemoveText}>Remove</Text>
+                      </Pressable>
                     </View>
-                  );
-                })}
-              </View>
-            ))}
+                  </View>
+                </View>
+              );
+            })}
+            {dashboardNotice ? <Text style={styles.authError}>{dashboardNotice}</Text> : null}
             <Pressable accessibilityRole="button" onPress={() => setIsPromoSheetVisible(true)} style={styles.cartPromoButton}>
               <Ionicons color="#143A73" name="pricetag-outline" size={21} />
               <View style={styles.productCopy}><Text style={styles.productName}>{promoDiscount > 0 ? 'Promo applied' : 'Have a promo code?'}</Text><Text style={styles.productStore}>{promoDiscount > 0 ? `${promoCode} · ${formatCurrency(promoDiscount)} off` : 'Apply a seller discount to selected items'}</Text></View>
@@ -8015,21 +8553,24 @@ function AppContent() {
             </Pressable>
             <View style={styles.cartSummaryCard}>
               <View style={styles.cartSummaryLine}>
-                <Text style={styles.cartSummaryLabel}>Selected subtotal · {getCartCount(selectedCartLines)} {getCartCount(selectedCartLines) === 1 ? 'item' : 'items'}</Text>
+                <Text style={styles.cartSummaryLabel}>Subtotal</Text>
                 <Text style={styles.cartSummaryAmount}>{formatCurrency(cartSubtotal)}</Text>
               </View>
+              <View style={styles.cartSummaryLine}>
+                <Text style={styles.cartSummaryLabel}>Delivery fee</Text>
+                <Text style={styles.cartSummaryAmount}>{formatCurrency(cartDeliveryFee)}</Text>
+              </View>
+              <View style={styles.cartSummaryLine}>
+                <Text style={styles.cartSummaryLabel}>Service fees</Text>
+                <Text style={styles.cartSummaryAmount}>{formatCurrency(cartServiceFees)}</Text>
+              </View>
               {promoDiscount > 0 ? <View style={styles.cartSummaryLine}><Text style={styles.cartSummaryLabel}>Promo discount</Text><Text style={styles.cartSummaryAmount}>−{formatCurrency(promoDiscount)}</Text></View> : null}
-              <Text style={styles.cartSummaryHint}>Delivery details are confirmed at checkout.</Text>
+              <View style={[styles.cartSummaryLine, styles.cartSummaryTotal]}>
+                <Text style={styles.cartSummaryTotalLabel}>Total</Text>
+                <Text style={styles.cartSummaryTotalAmount}>{formatCurrency(cartTotal)}</Text>
+              </View>
+              <Text style={styles.cartSummaryHint}>Delivery fee is based on your saved location and is confirmed at checkout.</Text>
             </View>
-            <Pressable
-              accessibilityRole="button"
-              disabled={!selectedCartLines.length}
-              onPress={() => setScreen('checkout')}
-              style={({ pressed }) => [styles.cartCheckoutButton, (pressed || !selectedCartLines.length) && styles.pressedButton]}
-            >
-              <Text style={styles.cartCheckoutText}>{selectedCartLines.length ? `Checkout · ${formatCurrency(Math.max(0, cartSubtotal - promoDiscount))}` : 'Select items to continue'}</Text>
-              <Ionicons color="#FFF" name="arrow-forward" size={19} />
-            </Pressable>
           </>
         )}
         <Modal animationType="slide" transparent visible={isPromoSheetVisible} onRequestClose={() => setIsPromoSheetVisible(false)}>
@@ -8072,7 +8613,38 @@ function AppContent() {
     });
 
     return (
-      <FormShell title={isGuestBrowsing ? 'Your cart is ready' : 'Checkout'} description={isGuestBrowsing ? 'Create an account or sign in when you’re ready to place your order.' : 'Confirm your delivery details and payment method.'} onBack={() => setScreen('cart')}>
+      <FormShell
+        title={isGuestBrowsing ? 'Your cart is ready' : 'Check Out'}
+        description={isGuestBrowsing ? 'Create an account or sign in when you’re ready to place your order.' : 'Confirm your delivery details and payment method.'}
+        onBack={() => setScreen('cart')}
+        footer={!isGuestBrowsing ? (
+          <View style={styles.shoppingStickyFooter}>
+            <View style={styles.shoppingFooterTotal}>
+              <Text style={styles.shoppingFooterLabel}>ORDER TOTAL</Text>
+              <Text style={styles.shoppingFooterAmount}>{formatCurrency(checkoutTotal)}</Text>
+              <Text style={styles.shoppingFooterHint}>Secure online payment</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isSubmittingOrder || !location.trim() || !selectedCartLines.length}
+              style={[
+                styles.shoppingFooterButton,
+                (isSubmittingOrder || !location.trim() || !selectedCartLines.length) && styles.shoppingFooterButtonDisabled,
+              ]}
+              onPress={confirmOrder}
+            >
+              <Text style={styles.shoppingFooterButtonText}>
+                {usePaymentSimulator
+                  ? isSubmittingOrder ? 'CREATING TEST ORDER…' : 'PLACE TEST ORDER'
+                  : isSubmittingOrder
+                  ? 'OPENING MONNIFY…'
+                  : 'PLACE ORDER'}
+              </Text>
+              {!isSubmittingOrder && !usePaymentSimulator ? <Ionicons color="#FFF" name="lock-closed-outline" size={17} /> : null}
+            </Pressable>
+          </View>
+        ) : undefined}
+      >
         {isGuestBrowsing ? (
           <>
             <View style={styles.guestCheckoutCard}>
@@ -8100,7 +8672,33 @@ function AppContent() {
           </>
         ) : (
           <>
-            <Field label="Delivery address" value={location} onChangeText={setLocation} placeholder="Enter your delivery address" />
+            <View style={styles.checkoutAddressCard}>
+              <View style={styles.checkoutAddressHeader}>
+                <Text style={styles.checkoutSectionTitle}>Delivery address</Text>
+                {location.trim() ? (
+                  <Pressable accessibilityRole="button" onPress={() => setIsEditingCheckoutAddress((editing) => !editing)}>
+                    <Text style={styles.checkoutChangeText}>{isEditingCheckoutAddress ? 'Done' : 'Change'}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              {isEditingCheckoutAddress || !location.trim() ? (
+                <TextInput
+                  accessibilityLabel="Delivery address"
+                  autoCapitalize="words"
+                  multiline
+                  onChangeText={setLocation}
+                  placeholder="Enter your delivery address"
+                  placeholderTextColor="#8B9DB2"
+                  style={styles.checkoutAddressInput}
+                  value={location}
+                />
+              ) : (
+                <Text style={styles.checkoutAddressText}>{location}</Text>
+              )}
+              <Text style={styles.checkoutAddressHint}>Enter a street address, landmark, or clear delivery directions.</Text>
+            </View>
+            <View style={styles.checkoutDivider} />
+            <Text style={styles.checkoutSectionTitle}>Delivery schedule</Text>
             <Text style={styles.fieldLabel}>Delivery date</Text>
             <View style={styles.ratingChoices}>
               {deliveryDateOptions.map((option) => (
@@ -8140,7 +8738,8 @@ function AppContent() {
               <SecondaryButton label={isApplyingPromo ? 'Checking code…' : 'Apply promo'} disabled={isApplyingPromo} onPress={() => void applyPromoCode()} />
               {promoMessage ? <Text style={promoDiscount > 0 ? styles.dashboardNotice : styles.authError}>{promoMessage}</Text> : null}
             </View>
-            <Text style={styles.fieldLabel}>Payment method</Text>
+            <View style={styles.checkoutDivider} />
+            <Text style={styles.checkoutSectionTitle}>Payment method</Text>
             <Pressable accessibilityRole="radio" accessibilityState={{ selected: !usePaymentSimulator && paymentMethod === 'bank_transfer' }} onPress={() => { setUsePaymentSimulator(false); setPaymentMethod('bank_transfer'); }} style={[styles.paymentOption, !usePaymentSimulator && paymentMethod === 'bank_transfer' && styles.selectedPayment]}>
               <Ionicons color="#143A73" name="swap-horizontal-outline" size={23} style={styles.paymentIcon} />
               <View style={styles.productCopy}><Text style={styles.productName}>Bank transfer</Text><Text style={styles.productStore}>Monnify · Sandbox test</Text></View>
@@ -8158,12 +8757,7 @@ function AppContent() {
                 {usePaymentSimulator ? <Ionicons color="#143A73" name="checkmark-circle" size={22} /> : <View style={styles.paymentRadioEmpty} />}
               </Pressable>
             ) : null}
-            <Pressable accessibilityRole="radio" accessibilityState={{ selected: !usePaymentSimulator && paymentMethod === 'cash_on_delivery' }} onPress={() => { setUsePaymentSimulator(false); setPaymentMethod('cash_on_delivery'); }} style={[styles.paymentOption, !usePaymentSimulator && paymentMethod === 'cash_on_delivery' && styles.selectedPayment]}>
-              <Ionicons color="#143A73" name="cash-outline" size={23} style={styles.paymentIcon} />
-              <View style={styles.productCopy}><Text style={styles.productName}>Cash on delivery</Text><Text style={styles.productStore}>Pay the rider in cash when your order arrives</Text></View>
-              {!usePaymentSimulator && paymentMethod === 'cash_on_delivery' ? <Ionicons color="#143A73" name="checkmark-circle" size={22} /> : <View style={styles.paymentRadioEmpty} />}
-            </Pressable>
-            <View style={styles.checkoutCostCard}>
+            <View style={[styles.checkoutCostCard, styles.checkoutCostCardBlue]}>
               <Text style={styles.checkoutCostTitle}>Order summary</Text>
               <View style={styles.checkoutCostRow}>
                 <Text style={styles.checkoutCostLabel}>Items subtotal</Text>
@@ -8201,31 +8795,40 @@ function AppContent() {
                 <Ionicons color="#8A5A10" name="flask-outline" size={20} />
                 <Text style={styles.paymentSetupNoticeText}>Developer-only simulation. No money moves, simulated orders never generate seller or rider payouts, and this does not contact Monnify.</Text>
               </View>
-            ) : paymentMethod === 'cash_on_delivery' ? (
-              <View style={styles.paymentSetupNotice}>
-                <Ionicons color="#2D8A59" name="information-circle-outline" size={20} />
-                <Text style={styles.paymentSetupNoticeText}>Pay {formatCurrency(checkoutTotal)} in cash to the delivery rider when your order arrives.</Text>
-              </View>
             ) : (
               <View style={styles.paymentSetupNotice}>
                 <Ionicons color="#8A5A10" name="information-circle-outline" size={20} />
                 <Text style={styles.paymentSetupNoticeText}>Sandbox payments only. Seller and rider payouts remain on hold until you confirm delivery.</Text>
               </View>
             )}
-            <PrimaryButton
-              label={usePaymentSimulator
-                ? isSubmittingOrder ? 'Creating test order…' : `Create test order · ${formatCurrency(checkoutTotal)}`
-                : paymentMethod === 'cash_on_delivery'
-                ? isSubmittingOrder ? 'Placing order...' : `Place order · ${formatCurrency(checkoutTotal)}`
-                : isSubmittingOrder ? 'Opening Monnify…' : `Pay with Monnify · ${formatCurrency(checkoutTotal)}`}
-              disabled={isSubmittingOrder || !location.trim() || !selectedCartLines.length}
-              onPress={confirmOrder}
-            />
             {!location.trim() ? <Text style={styles.formHint}>Add a delivery address to prepare your order.</Text> : null}
             {authError ? <Text style={styles.authError}>{authError}</Text> : null}
           </>
         )}
       </FormShell>
+    );
+  }
+
+  if (screen === 'orderSuccess') {
+    return (
+      <Shell>
+        <View style={styles.orderSuccessScreen}>
+          <View style={styles.orderSuccessMark}>
+            <Ionicons color="#27D6A4" name="checkmark" size={86} />
+          </View>
+          <Text style={styles.orderSuccessTitle}>{orderSuccessPaid ? 'Purchase successful' : 'Order placed'}</Text>
+          {orderSuccessOrderId ? (
+            <Text style={styles.orderSuccessReference}>Order #{orderSuccessOrderId.slice(0, 8).toUpperCase()}</Text>
+          ) : null}
+          <Text style={styles.orderSuccessDescription}>{orderSuccessMessage}</Text>
+          <View style={styles.orderSuccessActions}>
+            <PrimaryButton label="View your orders" onPress={() => setScreen('orders')} />
+            <Pressable accessibilityRole="link" onPress={() => setScreen('dashboard')} style={styles.orderSuccessReturn}>
+              <Text style={styles.orderSuccessReturnText}>Return to dashboard</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Shell>
     );
   }
 
@@ -8371,6 +8974,11 @@ function AppContent() {
             {selectedOrder.items.map((item) => (
               <View key={`${item.orderItemId || item.id}-${item.name}`} style={styles.substitutionOfferCard}>
                 <Text style={styles.productName}>{item.quantity} × {item.name}</Text>
+                {item.blendingRequested ? (
+                  <Text style={styles.substitutionOfferText}>
+                    Blending requested · {formatCurrency(Number(item.blendingFeeApplied || 0))} per unit
+                  </Text>
+                ) : null}
                 {item.substitutionOffer ? (
                   item.substitutionOffer.status === 'pending' ? (
                     <View style={styles.substitutionBuyerOffer}>
@@ -8507,6 +9115,41 @@ function AppContent() {
                 </View>
               );
             })}
+            {selectedOrder.assignedDeliveryId ? (() => {
+              const key = `${selectedOrder.id}:rider`;
+              const savedReview = selectedOrder.riderReview;
+              const draft = reviewDrafts[key] || { rating: savedReview?.rating || 5, review: savedReview?.review || '' };
+              return (
+                <View style={styles.featureCard}>
+                  <Text style={styles.productName}>Your delivery rider</Text>
+                  <View style={styles.ratingChoices}>
+                    {[1, 2, 3, 4, 5].map((rating) => (
+                      <Pressable
+                        accessibilityLabel={`Rate rider ${rating} out of 5`}
+                        accessibilityRole="button"
+                        key={rating}
+                        onPress={() => setReviewDrafts((current) => ({ ...current, [key]: { ...draft, rating } }))}
+                        style={[styles.ratingChoice, rating <= draft.rating && styles.ratingChoiceSelected]}
+                      >
+                        <Text style={[styles.ratingChoiceText, rating <= draft.rating && styles.ratingChoiceTextSelected]}>★</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Field
+                    label="Rider review (optional)"
+                    value={draft.review}
+                    onChangeText={(review) => setReviewDrafts((current) => ({ ...current, [key]: { ...draft, review } }))}
+                    placeholder="Share a few words about your delivery"
+                    multiline
+                  />
+                  <PrimaryButton
+                    label={submittingReviewKey === key ? 'Saving rating…' : savedReview ? 'Update rider rating' : 'Submit rider rating'}
+                    disabled={Boolean(submittingReviewKey)}
+                    onPress={() => void submitRiderReview(selectedOrder)}
+                  />
+                </View>
+              );
+            })() : null}
           </View>
         ) : null}
         {role === 'buyer' ? (
@@ -8627,6 +9270,9 @@ function AppContent() {
 function Shell({ children, footer, toast }: { children: React.ReactNode; footer?: React.ReactNode; toast?: string }) {
   const entrance = useRef(new Animated.Value(0)).current;
   const navigation = useSyncExternalStore(subscribeToAppNavigation, getAppNavigationSnapshot, getAppNavigationSnapshot);
+  const isShoppingFlow = navigation?.screen === 'cart'
+    || navigation?.screen === 'checkout'
+    || navigation?.screen === 'orderSuccess';
 
   useEffect(() => {
     Animated.timing(entrance, {
@@ -8641,7 +9287,7 @@ function Shell({ children, footer, toast }: { children: React.ReactNode; footer?
     : null;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+    <SafeAreaView style={[styles.safeArea, isShoppingFlow && styles.shoppingSafeArea]} edges={['top', 'bottom']}>
       <StatusBar style="dark" />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -8662,7 +9308,7 @@ function Shell({ children, footer, toast }: { children: React.ReactNode; footer?
           ]}
         >
           <ScrollView
-            contentContainerStyle={styles.container}
+            contentContainerStyle={[styles.container, isShoppingFlow && styles.shoppingContainer]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
           >
@@ -8673,6 +9319,7 @@ function Shell({ children, footer, toast }: { children: React.ReactNode; footer?
               <Text style={styles.toastText}>{toast}</Text>
             </View>
           ) : null}
+          {isShoppingFlow ? footer : null}
           {tabs && navigation ? (
             <View accessibilityRole="tablist" style={styles.bottomNavigation}>
               {tabs.map((tab) => (
@@ -8696,7 +9343,7 @@ function Shell({ children, footer, toast }: { children: React.ReactNode; footer?
                 </Pressable>
               ))}
             </View>
-          ) : footer}
+          ) : !isShoppingFlow ? footer : null}
         </Animated.View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -8711,9 +9358,9 @@ export default function App() {
   );
 }
 
-function FormShell({ title, description, onBack, children, hideHeader = false }: { title: string; description: string; onBack: () => void; children: React.ReactNode; hideHeader?: boolean }) {
+function FormShell({ title, description, onBack, children, footer, hideHeader = false }: { title: string; description: string; onBack: () => void; children: React.ReactNode; footer?: React.ReactNode; hideHeader?: boolean }) {
   return (
-    <Shell>
+    <Shell footer={footer}>
       {!hideHeader && <BackButton onPress={onBack} />}
       {!hideHeader && <View style={styles.formHeader}><Text style={styles.pageTitle}>{title}</Text><Text style={styles.pageDescription}>{description}</Text></View>}
       <View style={styles.form}>{children}</View>
@@ -8782,8 +9429,8 @@ function NotificationButton({ unreadCount, onPress }: { unreadCount: number; onP
   );
 }
 
-function Field({ label, value, onChangeText, placeholder, secureTextEntry, keyboardType, multiline }: { label: string; value: string; onChangeText: (value: string) => void; placeholder: string; secureTextEntry?: boolean; keyboardType?: 'email-address' | 'decimal-pad' | 'numeric' | 'phone-pad' | 'default'; multiline?: boolean }) {
-  return <View style={styles.field}><Text style={styles.fieldLabel}>{label}</Text><TextInput autoCapitalize="none" keyboardType={keyboardType} multiline={multiline} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor="#8B9DB2" secureTextEntry={secureTextEntry} style={[styles.input, multiline && styles.multilineInput]} value={value} /></View>;
+function Field({ label, value, onChangeText, placeholder, secureTextEntry, keyboardType, multiline, invalid = false }: { label: string; value: string; onChangeText: (value: string) => void; placeholder: string; secureTextEntry?: boolean; keyboardType?: 'email-address' | 'decimal-pad' | 'numeric' | 'phone-pad' | 'default'; multiline?: boolean; invalid?: boolean }) {
+  return <View style={styles.field}><Text style={[styles.fieldLabel, invalid && styles.fieldLabelError]}>{label}</Text><TextInput autoCapitalize="none" keyboardType={keyboardType} multiline={multiline} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor="#8B9DB2" secureTextEntry={secureTextEntry} style={[styles.input, multiline && styles.multilineInput, invalid && styles.inputError]} value={value} /></View>;
 }
 
 function Terms({ onOpen }: { onOpen: () => void }) {
@@ -8941,7 +9588,9 @@ const styles = StyleSheet.create({
   registeredLinkText: { color: '#143A73', fontSize: 17, fontWeight: '700' },
   field: { marginBottom: 18 },
   fieldLabel: { color: '#1D4E89', fontSize: 16, fontWeight: '700', marginBottom: 10 },
+  fieldLabelError: { color: '#B42318' },
   input: { backgroundColor: '#F3F2EC', borderColor: '#D9D4C7', borderRadius: 14, borderWidth: 1, color: '#1B2B40', fontSize: 18, height: 56, paddingHorizontal: 16 },
+  inputError: { backgroundColor: '#FFF5F5', borderColor: '#D92D20', borderWidth: 2 },
   multilineInput: { height: 92, paddingTop: 14, textAlignVertical: 'top' },
   imagePicker: { alignItems: 'center', backgroundColor: '#F4F8FC', borderColor: '#8FB8E8', borderRadius: 16, borderStyle: 'dashed', borderWidth: 1.5, justifyContent: 'center', minHeight: 150, overflow: 'hidden' },
   imagePickerIcon: { color: '#143A73', fontSize: 32, fontWeight: '300' },
@@ -9007,6 +9656,14 @@ const styles = StyleSheet.create({
   locationHintText: { color: '#143A73', fontSize: 14, fontWeight: '600' },
   successMark: { alignItems: 'center', backgroundColor: '#D5F0FF', borderRadius: 40, height: 80, justifyContent: 'center', width: 80 },
   successText: { color: '#143A73', fontSize: 42, fontWeight: '700' },
+  orderSuccessScreen: { alignItems: 'center', flexGrow: 1, justifyContent: 'center', minHeight: 620, paddingHorizontal: 8, paddingVertical: 40 },
+  orderSuccessMark: { alignItems: 'center', height: 112, justifyContent: 'center', width: 112 },
+  orderSuccessTitle: { color: '#143A73', fontSize: 28, fontWeight: '700', marginTop: 32, textAlign: 'center' },
+  orderSuccessReference: { color: '#6B7F99', fontSize: 13, fontWeight: '700', letterSpacing: 0.6, marginTop: 12 },
+  orderSuccessDescription: { color: '#1D4E89', fontSize: 18, lineHeight: 29, marginTop: 20, maxWidth: 430, textAlign: 'center' },
+  orderSuccessActions: { marginTop: 150, width: '100%' },
+  orderSuccessReturn: { alignSelf: 'center', marginTop: 24, padding: 8 },
+  orderSuccessReturnText: { color: '#1D4E89', fontSize: 16, textDecorationLine: 'underline' },
   dashboardHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 16 },
   dashboardGreeting: { color: '#6B7F99', fontSize: 13, fontWeight: '600', letterSpacing: 0.2 },
   dashboardTitle: { color: '#143A73', fontSize: 25, fontWeight: '800', letterSpacing: -0.5, marginTop: 5 },
@@ -9125,6 +9782,14 @@ const styles = StyleSheet.create({
   sellerReplacePhotoText: { color: '#143A73', fontSize: 14, fontWeight: '700' },
   sellerProductFormRow: { flexDirection: 'row', gap: 12 },
   sellerProductFormColumn: { flex: 1, minWidth: 0 },
+  categoryDropdown: { marginBottom: 14 },
+  categoryDropdownTrigger: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#C9DBF3', borderRadius: 12, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 50, paddingHorizontal: 14 },
+  categoryDropdownValue: { color: '#143A73', fontSize: 15, fontWeight: '600' },
+  categoryDropdownOptions: { backgroundColor: '#FFF', borderColor: '#C9DBF3', borderRadius: 12, borderWidth: 1, marginTop: 6, maxHeight: 220 },
+  categoryDropdownOption: { alignItems: 'center', borderBottomColor: '#E8EEF5', borderBottomWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 44, paddingHorizontal: 14 },
+  categoryDropdownOptionSelected: { backgroundColor: '#E8F2FA' },
+  categoryDropdownOptionText: { color: '#334B66', fontSize: 14 },
+  categoryDropdownOptionTextSelected: { color: '#143A73', fontWeight: '700' },
   sellerUnitChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 18 },
   sellerUnitChoice: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#D9E1D8', borderRadius: 14, borderWidth: 1, flexDirection: 'row', flexGrow: 1, gap: 9, minHeight: 54, paddingHorizontal: 13 },
   sellerUnitChoiceSelected: { backgroundColor: '#E8F2FA', borderColor: '#E8F2FA' },
@@ -9220,15 +9885,20 @@ const styles = StyleSheet.create({
   marketFilterHint: { color: '#536A86', fontSize: 12, lineHeight: 17, marginTop: 4 },
   marketFilterClear: { paddingHorizontal: 10, paddingVertical: 8 },
   marketFilterClearText: { color: '#143A73', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
-  categoryWrap: { flexDirection: 'row', gap: 10, marginTop: 10, paddingRight: 20 },
   verifiedOnlyFilter: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#F7FAFF', borderColor: '#C9DBF3', borderRadius: 999, borderWidth: 1, flexDirection: 'row', gap: 8, marginTop: 12, paddingHorizontal: 12, paddingVertical: 9 },
   verifiedOnlyFilterActive: { backgroundColor: '#E4F4EC', borderColor: '#9CCFB3' },
   verifiedOnlyFilterText: { color: '#1B2B40', fontSize: 13, fontWeight: '700' },
   marketCategoryHeading: { color: '#143A73', fontSize: 15, fontWeight: '800' },
-  marketChip: { alignItems: 'center', backgroundColor: '#F7FAFF', borderColor: '#C9DBF3', borderRadius: 999, borderWidth: 1, justifyContent: 'center', minHeight: 42, paddingHorizontal: 16 },
-  marketChipActive: { backgroundColor: '#0F3D6E', borderColor: '#0F3D6E' },
-  marketChipText: { color: '#1B2B40', fontSize: 14, fontWeight: '700' },
-  marketChipTextActive: { color: '#FFFFFF' },
+  marketCategoryDropdown: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#C9DBF3', borderRadius: 12, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, minHeight: 48, paddingHorizontal: 14 },
+  marketCategoryDropdownValue: { color: '#143A73', fontSize: 14, fontWeight: '700' },
+  marketCategoryDropdownOptions: { backgroundColor: '#FFF', borderColor: '#C9DBF3', borderRadius: 12, borderWidth: 1, marginTop: 6, maxHeight: 230 },
+  marketCategoryDropdownGroupLabel: { backgroundColor: '#F2F7FF', color: '#536A86', fontSize: 11, fontWeight: '800', letterSpacing: 0.4, paddingHorizontal: 14, paddingVertical: 9, textTransform: 'uppercase' },
+  marketCategoryDropdownOption: { alignItems: 'center', borderBottomColor: '#E8EEF5', borderBottomWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 44, paddingHorizontal: 14 },
+  marketCategoryDropdownOptionSelected: { backgroundColor: '#E8F2FA' },
+  marketCategoryDropdownOptionText: { color: '#334B66', fontSize: 14 },
+  marketCategoryDropdownOptionTextSelected: { color: '#143A73', fontWeight: '700' },
+  marketCategoryDropdownNested: { borderLeftColor: '#C9DBF3', borderLeftWidth: 2, marginLeft: 18 },
+  marketCategoryDropdownNestedOption: { paddingLeft: 16 },
   marketSectionHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, marginBottom: 12 },
   marketSectionTitle: { color: '#1B2B40', fontSize: 24, fontWeight: '800', letterSpacing: -0.6 },
   marketSectionMeta: { color: '#536A86', fontSize: 12, fontWeight: '700' },
@@ -9240,6 +9910,11 @@ const styles = StyleSheet.create({
   marketProductPrice: { color: '#0F3D6E', fontSize: 18, fontWeight: '800', marginTop: 8 },
   marketProductStoreRow: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   marketProductStore: { color: '#6B7F99', fontSize: 11 },
+  marketProductRating: { color: '#9B6500', fontSize: 11, fontWeight: '700', marginTop: 5 },
+  marketProductPreparation: { color: '#0F6B46', fontSize: 11, fontWeight: '700', marginTop: 5 },
+  blendingOptionRow: { alignItems: 'center', backgroundColor: '#F2F8F4', borderColor: '#B9DBC5', borderRadius: 13, borderWidth: 1, flexDirection: 'row', justifyContent: 'space-between', marginTop: 16, padding: 13 },
+  cartBlendingOption: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, maxWidth: 300 },
+  cartBlendingLabel: { color: '#0F6B46', flex: 1, fontSize: 11, fontWeight: '700', marginRight: 8 },
   storefrontLink: { color: '#0F3D6E', fontWeight: '700', textDecorationLine: 'underline' },
   storefrontHeader: { alignItems: 'flex-start', backgroundColor: '#F2F7FF', borderColor: '#D6E4F2', borderRadius: 18, borderWidth: 1, marginTop: 16, padding: 18 },
   storefrontIcon: { alignItems: 'center', backgroundColor: '#D9EAFD', borderRadius: 24, height: 48, justifyContent: 'center', width: 48 },
@@ -9372,7 +10047,7 @@ const styles = StyleSheet.create({
   cartCountBadge: { alignItems: 'center', alignSelf: 'flex-end', backgroundColor: '#D9EAFD', borderRadius: 16, flexDirection: 'row', gap: 7, marginBottom: 4, paddingHorizontal: 12, paddingVertical: 9 },
   cartCountText: { color: '#143A73', fontSize: 14, fontWeight: '800' },
   cartEmptyIconWrap: { alignItems: 'center', backgroundColor: '#D9EAFD', borderRadius: 34, height: 88, justifyContent: 'center', width: 88 },
-  cartRow: { alignItems: 'flex-start', backgroundColor: '#FFF', borderColor: '#D6E4F2', borderRadius: 14, borderWidth: 1, flexDirection: 'row', marginTop: 14, minHeight: 104, padding: 12 },
+  cartRow: { alignItems: 'flex-start', backgroundColor: '#FFF', borderColor: '#CDE8FA', borderRadius: 18, borderWidth: 1.5, flexDirection: 'row', marginTop: 14, minHeight: 116, padding: 12 },
   cartRowUnselected: { opacity: 0.62 },
   cartSelectAllRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 18 },
   cartCategoryGroup: { marginTop: 18 },
@@ -9393,10 +10068,17 @@ const styles = StyleSheet.create({
   cartQuantityButtonDisabled: { opacity: 0.4 },
   cartQuantityText: { color: '#1B2B40', fontSize: 14, fontWeight: '700', minWidth: 30, textAlign: 'center' },
   cartRemoveButton: { alignItems: 'center', backgroundColor: '#FFF5F5', borderRadius: 12, height: 38, justifyContent: 'center', marginLeft: 8, width: 38 },
-  cartSummaryCard: { backgroundColor: '#FFF', borderColor: '#D6E4F2', borderRadius: 18, borderWidth: 1, marginTop: 22, padding: 16 },
-  cartSummaryLine: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  cartSummaryLabel: { color: '#536A86', fontSize: 14, fontWeight: '600' },
-  cartSummaryAmount: { color: '#143A73', fontSize: 20, fontWeight: '800' },
+  cartItemActions: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginTop: 4 },
+  cartActionLink: { paddingHorizontal: 2, paddingVertical: 8 },
+  cartSaveText: { color: '#6B7F70', fontSize: 12, fontWeight: '600' },
+  cartRemoveText: { color: '#CF7067', fontSize: 12, fontWeight: '600' },
+  cartSummaryCard: { backgroundColor: '#E8F2FA', borderColor: '#E8F2FA', borderRadius: 20, borderWidth: 1, marginTop: 22, padding: 20 },
+  cartSummaryLine: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
+  cartSummaryLabel: { color: '#536A86', fontSize: 14, fontWeight: '500' },
+  cartSummaryAmount: { color: '#1B2B40', fontSize: 15, fontWeight: '500' },
+  cartSummaryTotal: { borderTopColor: '#CFDDE8', borderTopWidth: 1, marginTop: 12, paddingTop: 12 },
+  cartSummaryTotalLabel: { color: '#1B2B40', fontSize: 15, fontWeight: '700' },
+  cartSummaryTotalAmount: { color: '#1B2B40', fontSize: 17, fontWeight: '700' },
   cartSummaryHint: { color: '#7D91A8', fontSize: 12, marginTop: 8 },
   promoModalOverlay: { flex: 1, justifyContent: 'flex-end' },
   promoModalBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(13, 30, 50, 0.45)' },
@@ -9405,6 +10087,16 @@ const styles = StyleSheet.create({
   promoCodeInput: { backgroundColor: '#F7FAFF', borderColor: '#C9DBF3', borderRadius: 12, borderWidth: 1, color: '#1B2B40', fontSize: 16, marginBottom: 14, paddingHorizontal: 14, paddingVertical: 13 },
   cartCheckoutButton: { alignItems: 'center', backgroundColor: '#0F3D6E', borderRadius: 17, flexDirection: 'row', justifyContent: 'center', marginTop: 14, minHeight: 58, paddingHorizontal: 18 },
   cartCheckoutText: { color: '#FFF', fontSize: 16, fontWeight: '800', marginRight: 10 },
+  shoppingSafeArea: { backgroundColor: '#FFF' },
+  shoppingContainer: { backgroundColor: '#FFF' },
+  shoppingStickyFooter: { alignItems: 'center', backgroundColor: '#F4F8FC', borderTopColor: '#D9E5F0', borderTopWidth: 1, flexDirection: 'row', gap: 14, justifyContent: 'space-between', marginHorizontal: -22, paddingHorizontal: 22, paddingVertical: 14 },
+  shoppingFooterTotal: { flex: 1 },
+  shoppingFooterLabel: { color: '#5D7189', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  shoppingFooterAmount: { color: '#143A73', fontSize: 24, fontWeight: '900', marginTop: 3 },
+  shoppingFooterHint: { color: '#73849A', fontSize: 11, fontWeight: '600', marginTop: 2 },
+  shoppingFooterButton: { alignItems: 'center', backgroundColor: '#0F6B46', borderRadius: 16, elevation: 3, flexDirection: 'row', gap: 9, justifyContent: 'center', minHeight: 58, minWidth: 170, paddingHorizontal: 17, shadowColor: '#0F6B46', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.2, shadowRadius: 6 },
+  shoppingFooterButtonDisabled: { backgroundColor: '#A8C4E2' },
+  shoppingFooterButtonText: { color: '#FFF', fontSize: 17, fontWeight: '800', textAlign: 'center' },
   guestCheckoutCard: { alignItems: 'center', backgroundColor: '#F7FAFF', borderColor: '#C9DBF3', borderRadius: 18, borderWidth: 1, marginTop: 24, padding: 18 },
   guestCheckoutIcon: { alignItems: 'center', backgroundColor: '#D9EAFD', borderRadius: 28, height: 56, justifyContent: 'center', width: 56 },
   guestCheckoutTitle: { color: '#143A73', fontSize: 20, fontWeight: '800', marginTop: 14 },
@@ -9458,8 +10150,11 @@ const styles = StyleSheet.create({
   notificationCardUnread: { backgroundColor: '#F3F8FF', borderColor: '#8FB8E8' },
   notificationNewOrderCard: { borderColor: '#8BC9A5', borderLeftWidth: 4 },
   notificationNewOrderCardUnread: { backgroundColor: '#EFFAF3', borderColor: '#42A66B' },
+  notificationDeliveryCard: { borderColor: '#8BC9A5', borderLeftWidth: 4 },
+  notificationDeliveryCardUnread: { backgroundColor: '#EFFAF3', borderColor: '#42A66B' },
   notificationIcon: { alignItems: 'center', backgroundColor: '#D9EAFD', borderRadius: 18, height: 38, justifyContent: 'center', marginRight: 12, width: 38 },
   notificationNewOrderIcon: { backgroundColor: '#D8F2E2' },
+  notificationDeliveryIcon: { backgroundColor: '#D8F2E2' },
   notificationCopy: { flex: 1 },
   notificationTitle: { color: '#143A73', fontSize: 15, fontWeight: '800' },
   notificationNewOrderTitle: { color: '#0F6B46' },
@@ -9467,6 +10162,7 @@ const styles = StyleSheet.create({
   notificationBody: { color: '#536A86', fontSize: 13, lineHeight: 19, marginTop: 5 },
   notificationTime: { color: '#7D91A8', fontSize: 11, marginTop: 8 },
   notificationUnreadDot: { backgroundColor: '#1B67BA', borderRadius: 5, height: 9, marginLeft: 8, marginTop: 4, width: 9 },
+  notificationDeliveryUnreadDot: { backgroundColor: '#0F6B46' },
   notificationCountPill: { backgroundColor: '#D9EAFD', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 7 },
   notificationCountText: { color: '#143A73', fontSize: 12, fontWeight: '800' },
   notificationSetup: { backgroundColor: '#FFF8E8', borderRadius: 12, marginTop: 14, padding: 12 },
@@ -9479,11 +10175,20 @@ const styles = StyleSheet.create({
   paymentIcon: { color: '#143A73', fontSize: 22, width: 30 },
   paymentSetupNotice: { alignItems: 'flex-start', backgroundColor: '#FFF8E8', borderColor: '#F0D8A5', borderRadius: 12, borderWidth: 1, flexDirection: 'row', gap: 10, marginTop: 16, padding: 14 },
   paymentSetupNoticeText: { color: '#76520E', flex: 1, fontSize: 13, lineHeight: 19 },
+  checkoutAddressCard: { backgroundColor: '#FFF', borderColor: '#D6E4F2', borderRadius: 14, borderWidth: 1, marginTop: 12, padding: 15 },
+  checkoutAddressHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  checkoutSectionTitle: { color: '#143A73', fontSize: 18, fontWeight: '700', marginTop: 16 },
+  checkoutChangeText: { color: '#5476FF', fontSize: 14, fontWeight: '600' },
+  checkoutAddressText: { color: '#1B2B40', fontSize: 15, lineHeight: 23, marginTop: 8 },
+  checkoutAddressInput: { borderColor: '#D8E2D6', borderRadius: 12, borderWidth: 1, color: '#1B2B40', fontSize: 15, lineHeight: 23, marginTop: 10, minHeight: 54, paddingHorizontal: 12, paddingVertical: 10, textAlignVertical: 'top' },
+  checkoutAddressHint: { color: '#6B7F70', fontSize: 12, lineHeight: 18, marginTop: 8 },
+  checkoutDivider: { backgroundColor: '#E1E5E8', height: 1, marginTop: 24 },
   radioLabel: { color: '#143A73', fontSize: 20, fontWeight: '800' },
   totalCard: { alignItems: 'center', borderTopColor: '#D6E4F2', borderTopWidth: 1, flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, paddingTop: 18 },
   totalValue: { color: '#143A73', fontSize: 20, fontWeight: '800' },
   checkoutCostCard: { backgroundColor: '#FFF', borderColor: '#D6E4F2', borderRadius: 16, borderWidth: 1, marginTop: 22, padding: 16 },
-  checkoutCostTitle: { color: '#143A73', fontSize: 17, fontWeight: '800', marginBottom: 8 },
+  checkoutCostCardBlue: { backgroundColor: '#E8F2FA', borderColor: '#CDE8FA', borderRadius: 18, marginTop: 28, padding: 18 },
+  checkoutCostTitle: { color: '#143A73', fontSize: 18, fontWeight: '800', marginBottom: 8 },
   checkoutCostRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', minHeight: 42 },
   checkoutCostLabel: { color: '#536A86', flex: 1, fontSize: 14 },
   checkoutCostValue: { color: '#1B2B40', fontSize: 14, fontWeight: '700' },

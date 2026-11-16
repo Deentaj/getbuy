@@ -12,5 +12,8 @@ content_path = "./supabase/templates/confirmation.html"
 [functions.monnify-webhook]
 verify_jwt = false
 
+[functions.account-login]
+verify_jwt = false
+
 [functions.payment-simulator]
 verify_jwt = false

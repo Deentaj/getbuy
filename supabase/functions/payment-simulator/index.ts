@@ -50,7 +50,7 @@ Deno.serve(async (request) => {
       action?: string;
       delivery_address?: string;
       product_ids?: string[];
-      cart_items?: Array<{ product_id: string; variant_id?: string | null; quantity: number }>;
+      cart_items?: Array<{ product_id: string; variant_id?: string | null; quantity: number; blending_requested?: boolean }>;
       delivery_slot?: string;
       promo_code?: string | null;
       delivery_date?: string;
@@ -81,7 +81,7 @@ Deno.serve(async (request) => {
         return respond({ error: 'Choose a delivery date and a valid rewards amount.' }, 400);
       }
 
-      const { data: orderId, error: orderError } = await userClient.rpc('create_marketplace_order_with_cart_options', {
+      const { data: orderId, error: orderError } = await userClient.rpc('create_marketplace_order_with_blending_options', {
         p_delivery_address: payload.delivery_address.trim(),
         p_payment_method: 'monnify',
         p_cart_items: cartItems,
