@@ -5210,7 +5210,6 @@ function AppContent() {
       const position = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
-      const coordinates = `${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)}`;
       const [address] = await Location.reverseGeocodeAsync({
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
@@ -5227,16 +5226,19 @@ function AppContent() {
           setServiceArea(nearbyArea);
           setArea(nearbyArea);
         }
-        setLocation(addressLine || coordinates);
       } else {
-        setLocation(addressLine || coordinates);
         if (nearbyArea) setArea(nearbyArea);
       }
 
-      if (!addressLine) {
-        setAuthError('Your coordinates were found, but no street address was available. Review the location and add a delivery address if needed.');
+      if (addressLine || nearbyArea) {
+        setLocation(addressLine || nearbyArea);
+      }
+      if (!nearbyArea) {
+        setAuthError(addressLine
+          ? 'We found your address but could not identify the area. Enter your neighbourhood or delivery zone manually.'
+          : 'We could not identify an area from your current location. Enter your neighbourhood or delivery zone manually.');
       } else {
-        notify('Current location added. You can edit the address before saving.');
+        notify('Current area added. You can edit it before saving.');
       }
     } catch (error: unknown) {
       setAuthError(getErrorMessage(error, 'Unable to get your current location. Enter your address manually instead.'));
@@ -7471,9 +7473,9 @@ function AppContent() {
         <Text style={styles.accountDescription}>Choose your neighbourhood so the marketplace can show nearby shops and products. Add your full delivery address too.</Text>
         <Pressable disabled={isGettingCurrentLocation} onPress={useCurrentLocation} style={[styles.currentLocationButton, isGettingCurrentLocation && styles.disabledButton]}>
           <Ionicons color="#143A73" name="navigate-outline" size={21} style={styles.currentLocationIcon} />
-          <Text style={styles.currentLocationButtonText}>{isGettingCurrentLocation ? 'Finding your location…' : 'Use my current location'}</Text>
+          <Text style={styles.currentLocationButtonText}>{isGettingCurrentLocation ? 'Finding your area…' : 'Use my current area'}</Text>
         </Pressable>
-        <Text style={styles.locationHintText}>We’ll ask your permission while the app is open. You can edit the address or enter it manually below.</Text>
+        <Text style={styles.locationHintText}>We’ll use your location to identify your area, not display coordinates. You can edit the address or enter it manually below.</Text>
         <Field label="Address / location details" value={location} onChangeText={setLocation} placeholder="Enter your delivery address" />
         <Field label="Area / neighbourhood" value={area} onChangeText={setArea} placeholder="Your neighbourhood" />
         <Field label="Helpful directions (optional)" value={directions} onChangeText={setDirections} placeholder="Landmarks or delivery instructions" />
@@ -7602,9 +7604,9 @@ function AppContent() {
         <Field label="Service area" value={serviceArea} onChangeText={setServiceArea} placeholder="Your neighbourhood or delivery zone" />
         <Pressable disabled={isGettingCurrentLocation} onPress={useCurrentLocation} style={[styles.currentLocationButton, isGettingCurrentLocation && styles.disabledButton]}>
           <Ionicons color="#143A73" name="navigate-outline" size={21} style={styles.currentLocationIcon} />
-          <Text style={styles.currentLocationButtonText}>{isGettingCurrentLocation ? 'Finding your location…' : 'Use my current location'}</Text>
+          <Text style={styles.currentLocationButtonText}>{isGettingCurrentLocation ? 'Finding your area…' : 'Use my current area'}</Text>
         </Pressable>
-        <Text style={styles.locationHintText}>Location access is optional and only used when you tap the button.</Text>
+        <Text style={styles.locationHintText}>Location access is optional and only used when you tap the button. Your service area is filled in by name, not coordinates.</Text>
         <Field label="Address / current location" value={location} onChangeText={setLocation} placeholder="Street or nearby landmark (optional)" />
         <Text style={styles.fieldLabel}>Select ride</Text>
         <View style={styles.choiceRow}>
@@ -8700,7 +8702,7 @@ function AppContent() {
             <View style={styles.checkoutDivider} />
             <Text style={styles.checkoutSectionTitle}>Delivery schedule</Text>
             <Text style={styles.fieldLabel}>Delivery date</Text>
-            <View style={styles.ratingChoices}>
+            <View style={styles.issueTypeChoices}>
               {deliveryDateOptions.map((option) => (
                 <Pressable
                   accessibilityRole="radio"
@@ -8714,7 +8716,7 @@ function AppContent() {
               ))}
             </View>
             <Text style={styles.fieldLabel}>Delivery time window</Text>
-            <View style={styles.ratingChoices}>
+            <View style={styles.issueTypeChoices}>
               {([
                 ['morning', '8am–12pm'],
                 ['afternoon', '12pm–4pm'],

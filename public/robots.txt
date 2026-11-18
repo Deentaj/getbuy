@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://getbuy.com.ng/sitemap.xml
