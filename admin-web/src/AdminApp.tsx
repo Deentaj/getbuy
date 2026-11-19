@@ -55,6 +55,10 @@ type StoreRequest = {
   storefront_photo_url?: string;
   seller_id_url?: string;
 };
+type StoreMonnifySubaccount = {
+  store_id: string;
+  sub_account_code: string;
+};
 type RiderRequest = {
   verification_id: string;
   rider_id: string;
@@ -189,6 +193,8 @@ export default function AdminApp() {
   const [riderFilter, setRiderFilter] = useState<RiderFilter>('all');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [storeRequests, setStoreRequests] = useState<StoreRequest[]>([]);
+  const [storeSubaccounts, setStoreSubaccounts] = useState<Record<string, string>>({});
+  const [storeSubaccountDrafts, setStoreSubaccountDrafts] = useState<Record<string, string>>({});
   const [riderRequests, setRiderRequests] = useState<RiderRequest[]>([]);
   const [finance, setFinance] = useState<FinanceData>({ collection_account: null, payouts: [], remittances: [] });
   const [transferReferences, setTransferReferences] = useState<Record<string, string>>({});
@@ -255,16 +261,19 @@ export default function AdminApp() {
       const [
         { data: snapshotData, error: snapshotError },
         { data: storeData, error: storeError },
+        { data: storeSubaccountData, error: storeSubaccountError },
         { data: riderData, error: riderError },
         { data: financeData, error: financeError },
       ] = await Promise.all([
         supabase.rpc('get_admin_dashboard_snapshot'),
         supabase.rpc('get_store_verification_queue'),
+        supabase.from('store_monnify_subaccounts').select('store_id, sub_account_code'),
         supabase.rpc('get_rider_verification_queue'),
         supabase.rpc('get_admin_finance_dashboard'),
       ]);
       if (snapshotError) throw snapshotError;
       if (storeError) throw storeError;
+      if (storeSubaccountError) throw storeSubaccountError;
       if (riderError) throw riderError;
       if (financeError) throw financeError;
       if (!snapshotData || typeof snapshotData !== 'object') throw new Error('Admin dashboard returned an invalid response.');
@@ -293,6 +302,10 @@ export default function AdminApp() {
       ]);
       setSnapshot(snapshotData as Snapshot);
       setStoreRequests(signedStores);
+      const storeCodes = Object.fromEntries(((storeSubaccountData || []) as StoreMonnifySubaccount[])
+        .map((row) => [row.store_id, row.sub_account_code]));
+      setStoreSubaccounts(storeCodes);
+      setStoreSubaccountDrafts(storeCodes);
       setRiderRequests(signedRiders);
       setFinance(financeData as FinanceData);
       const collectionAccount = (financeData as FinanceData).collection_account;
@@ -357,6 +370,30 @@ export default function AdminApp() {
       await loadDashboard();
     } catch (updateError: unknown) {
       setError(messageOf(updateError));
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  const saveStoreSubaccount = async (storeId: string) => {
+    setBusyId(storeId);
+    setError('');
+    try {
+      const code = (storeSubaccountDrafts[storeId] || '').trim();
+      const { error: saveError } = await supabase.rpc('admin_set_store_monnify_subaccount', {
+        p_store_id: storeId,
+        p_sub_account_code: code || null,
+      });
+      if (saveError) throw saveError;
+      setStoreSubaccounts((current) => {
+        const next = { ...current };
+        if (code) next[storeId] = code;
+        else delete next[storeId];
+        return next;
+      });
+      setStoreSubaccountDrafts((current) => ({ ...current, [storeId]: code }));
+    } catch (saveError: unknown) {
+      setError(messageOf(saveError));
     } finally {
       setBusyId('');
     }
@@ -540,7 +577,7 @@ export default function AdminApp() {
                 ))}
                 {storeRequests.length === 0 ? <Empty>No store requests are waiting for review.</Empty> : null}
               </section>
-              <section className="panel"><div className="section-heading"><div><h2>All stores</h2><p>{filtered.stores.length} shown · latest 100</p></div></div><div className="table-wrap"><table><thead><tr><th>STORE</th><th>OWNER</th><th>AREA</th><th>PRODUCTS</th><th>VERIFICATION</th></tr></thead><tbody>{filtered.stores.map((row) => <tr key={row.id}><td><b>{row.name}</b><small>{row.category}</small></td><td>{row.owner_name}</td><td>{row.market_area || '—'}</td><td>{row.product_count}</td><td><Status value={row.verification_status} /></td></tr>)}</tbody></table>{filtered.stores.length === 0 ? <Empty>No matching stores.</Empty> : null}</div></section>
+              <section className="panel"><div className="section-heading"><div><h2>All stores</h2><p>{filtered.stores.length} shown · latest 100. Configure verified Monnify subaccount codes for seller payment splits.</p></div></div><div className="table-wrap"><table><thead><tr><th>STORE</th><th>OWNER</th><th>AREA</th><th>PRODUCTS</th><th>VERIFICATION</th><th>MONNIFY SUBACCOUNT</th></tr></thead><tbody>{filtered.stores.map((row) => <tr key={row.id}><td><b>{row.name}</b><small>{row.category}</small></td><td>{row.owner_name}</td><td>{row.market_area || '—'}</td><td>{row.product_count}</td><td><Status value={row.verification_status} /></td><td><div className="payout-transfer-row"><input aria-label={`Monnify subaccount code for ${row.name}`} onChange={(event) => setStoreSubaccountDrafts((current) => ({ ...current, [row.id]: event.target.value }))} placeholder="MFY_SUB_…" value={storeSubaccountDrafts[row.id] || ''} /><button className="table-action" disabled={busyId === row.id || (storeSubaccountDrafts[row.id] || '').trim() === (storeSubaccounts[row.id] || '')} onClick={() => void saveStoreSubaccount(row.id)}>{busyId === row.id ? 'Saving…' : 'Save'}</button></div></td></tr>)}</tbody></table>{filtered.stores.length === 0 ? <Empty>No matching stores.</Empty> : null}</div></section>
             </>
           ) : null}
 

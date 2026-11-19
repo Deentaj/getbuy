@@ -1089,6 +1089,8 @@ function AppContent() {
   const [termsReturnScreen, setTermsReturnScreen] = useState<Screen>('welcome');
   const [rememberLogin, setRememberLogin] = useState(false);
   const [name, setName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [surname, setSurname] = useState('');
   const [profilePhotoPath, setProfilePhotoPath] = useState<string | null>(null);
   const [profilePhotoVersion, setProfilePhotoVersion] = useState(0);
   const [email, setEmail] = useState('');
@@ -3059,6 +3061,8 @@ function AppContent() {
     setCurrentUserId(null);
     setNotifications([]);
     setName('');
+    setFirstName('');
+    setSurname('');
     setPayoutHistory([]);
     setPayoutBankName('');
     setPayoutAccountName('');
@@ -3776,12 +3780,17 @@ function AppContent() {
   const createAccount = async () => {
     setAuthError('');
     setSignupNotice('');
+    const accountName = [firstName.trim(), surname.trim()].filter(Boolean).join(' ');
     if (!isSupabaseConfigured) {
       setAuthError('Account creation requires Supabase configuration.');
       return;
     }
     if (role === 'admin') {
       setAuthError('Administrator accounts are invitation-only.');
+      return;
+    }
+    if (!firstName.trim() || !surname.trim()) {
+      setAuthError('Enter your first name and surname.');
       return;
     }
     if (password.length < 8) {
@@ -3803,13 +3812,14 @@ function AppContent() {
         password,
         options: {
           data: {
-            full_name: name.trim(),
+            full_name: accountName,
             role,
             ...(role === 'buyer' || role === 'seller' || role === 'delivery' ? { phone_number: signupPhone.trim() } : {}),
           },
         },
       });
       if (error) throw error;
+      setName(accountName);
       setPassword('');
       setConfirmPassword('');
       if (!data.session) {
@@ -4598,6 +4608,10 @@ function AppContent() {
 
   const confirmOrder = async () => {
     setAuthError('');
+    if (promoDiscount > 0) {
+      setAuthError('Remove the promo discount before placing a seller-split order.');
+      return;
+    }
     if (!location.trim()) {
       setAuthError('Enter your delivery address before placing the order.');
       return;
@@ -4652,7 +4666,7 @@ function AppContent() {
             delivery_address: location.trim(),
             cart_items: cartItems,
             delivery_slot: deliverySlot,
-            promo_code: promoDiscount > 0 ? promoCode.trim() : null,
+            promo_code: null,
             delivery_date: deliveryDate,
             loyalty_points: 0,
           },
@@ -4678,7 +4692,7 @@ function AppContent() {
           cart_items: cartItems,
           payment_method: paymentMethod,
           delivery_slot: deliverySlot,
-          promo_code: promoDiscount > 0 ? promoCode.trim() : null,
+          promo_code: null,
           delivery_date: deliveryDate,
           loyalty_points: 0,
         },
@@ -7130,7 +7144,8 @@ function AppContent() {
         <Text style={styles.accountEyebrow}>{role === 'buyer' ? 'BUYER ACCOUNT · CHANGE ROLE' : role === 'seller' ? 'ACCOUNT · SELLER' : role === 'delivery' ? 'ACCOUNT · DELIVERY' : 'ACCOUNT · ADMIN'}</Text>
         <Text style={styles.accountTitle}>Join your local market</Text>
         <Text style={styles.accountDescription}>Just the essentials to get started. Your location comes next.</Text>
-        <Field label="Full name" value={name} onChangeText={setName} placeholder="Your full name" />
+        <Field label="First name" value={firstName} onChangeText={setFirstName} placeholder="Your first name" autoCapitalize="words" />
+        <Field label="Surname" value={surname} onChangeText={setSurname} placeholder="Your surname" autoCapitalize="words" />
         <Field label="Email address" value={email} onChangeText={setEmail} placeholder="maya@example.com" keyboardType="email-address" />
         <Field
           label="Phone number"
@@ -7158,7 +7173,7 @@ function AppContent() {
         </Text>
         <PrimaryButton
           label={isSubmittingAuth ? 'Creating account...' : role === 'buyer' ? 'Create buyer account' : 'Create account'}
-          disabled={isSubmittingAuth || !name.trim() || password.length < 8 || !email.trim() || signupPhone.replace(/\D/g, '').length < 10 || !confirmPassword || password !== confirmPassword}
+          disabled={isSubmittingAuth || !firstName.trim() || !surname.trim() || password.length < 8 || !email.trim() || signupPhone.replace(/\D/g, '').length < 10 || !confirmPassword || password !== confirmPassword}
           onPress={createAccount}
         />
         <View style={styles.authDivider}><View style={styles.authDividerLine} /><Text style={styles.authDividerText}>or sign up with</Text><View style={styles.authDividerLine} /></View>
@@ -8598,7 +8613,7 @@ function AppContent() {
     const deliveryFee = getDeliveryFee(location);
     const bookingFee = 100;
     const roadDevelopmentLevy = 100;
-    const checkoutTotal = Math.max(0, checkoutSubtotal - promoDiscount) + deliveryFee + bookingFee + roadDevelopmentLevy;
+    const checkoutTotal = checkoutSubtotal + deliveryFee + bookingFee + roadDevelopmentLevy;
     const todayLagos = getLagosDate();
     const deliveryDateOptions = Array.from({ length: 15 }, (_, index) => {
       const date = new Date(`${todayLagos}T12:00:00.000Z`);
@@ -8734,22 +8749,25 @@ function AppContent() {
               ))}
             </View>
             <View style={styles.featureCard}>
-              <Text style={styles.productName}>Seller promo code</Text>
-              <Text style={styles.productStore}>10% off eligible products from the participating store. Delivery and service fees are not discounted.</Text>
-              <Field label="Promo code" value={promoCode} onChangeText={(value) => { setPromoCode(value.toUpperCase()); setPromoDiscount(0); setPromoMessage(''); }} placeholder="Enter code" />
-              <SecondaryButton label={isApplyingPromo ? 'Checking code…' : 'Apply promo'} disabled={isApplyingPromo} onPress={() => void applyPromoCode()} />
-              {promoMessage ? <Text style={promoDiscount > 0 ? styles.dashboardNotice : styles.authError}>{promoMessage}</Text> : null}
+              <Text style={styles.productName}>Seller payment split</Text>
+              <Text style={styles.productStore}>Each store receives 100% of its item proceeds through Monnify. Promos and rewards are unavailable for split orders.</Text>
+              {promoDiscount > 0 ? (
+                <SecondaryButton
+                  label={`Remove promo ${promoCode} · ${formatCurrency(promoDiscount)} off`}
+                  onPress={() => { setPromoCode(''); setPromoDiscount(0); setPromoMessage(''); }}
+                />
+              ) : null}
             </View>
             <View style={styles.checkoutDivider} />
             <Text style={styles.checkoutSectionTitle}>Payment method</Text>
             <Pressable accessibilityRole="radio" accessibilityState={{ selected: !usePaymentSimulator && paymentMethod === 'bank_transfer' }} onPress={() => { setUsePaymentSimulator(false); setPaymentMethod('bank_transfer'); }} style={[styles.paymentOption, !usePaymentSimulator && paymentMethod === 'bank_transfer' && styles.selectedPayment]}>
               <Ionicons color="#143A73" name="swap-horizontal-outline" size={23} style={styles.paymentIcon} />
-              <View style={styles.productCopy}><Text style={styles.productName}>Bank transfer</Text><Text style={styles.productStore}>Monnify · Sandbox test</Text></View>
+              <View style={styles.productCopy}><Text style={styles.productName}>Bank transfer</Text><Text style={styles.productStore}>Monnify checkout</Text></View>
               {!usePaymentSimulator && paymentMethod === 'bank_transfer' ? <Ionicons color="#143A73" name="checkmark-circle" size={22} /> : <View style={styles.paymentRadioEmpty} />}
             </Pressable>
             <Pressable accessibilityRole="radio" accessibilityState={{ selected: !usePaymentSimulator && paymentMethod === 'card' }} onPress={() => { setUsePaymentSimulator(false); setPaymentMethod('card'); }} style={[styles.paymentOption, !usePaymentSimulator && paymentMethod === 'card' && styles.selectedPayment]}>
               <Ionicons color="#143A73" name="card-outline" size={23} style={styles.paymentIcon} />
-              <View style={styles.productCopy}><Text style={styles.productName}>Card payment</Text><Text style={styles.productStore}>Monnify · Sandbox test</Text></View>
+              <View style={styles.productCopy}><Text style={styles.productName}>Card payment</Text><Text style={styles.productStore}>Monnify checkout</Text></View>
               {!usePaymentSimulator && paymentMethod === 'card' ? <Ionicons color="#143A73" name="checkmark-circle" size={22} /> : <View style={styles.paymentRadioEmpty} />}
             </Pressable>
             {PAYMENT_SIMULATOR_AVAILABLE ? (
@@ -8780,17 +8798,11 @@ function AppContent() {
                 <Text style={styles.checkoutCostLabel}>Road development levy</Text>
                 <Text style={styles.checkoutCostValue}>{formatCurrency(roadDevelopmentLevy)}</Text>
               </View>
-              {promoDiscount > 0 ? (
-                <View style={styles.checkoutCostRow}>
-                  <Text style={styles.checkoutCostLabel}>Seller promo discount</Text>
-                  <Text style={styles.checkoutCostValue}>−{formatCurrency(promoDiscount)}</Text>
-                </View>
-              ) : null}
               <View style={[styles.checkoutCostRow, styles.checkoutGrandTotal]}>
                 <Text style={styles.checkoutGrandTotalLabel}>Total</Text>
                 <Text style={styles.checkoutGrandTotalValue}>{formatCurrency(checkoutTotal)}</Text>
               </View>
-              <Text style={styles.checkoutFeeHint}>Seller-funded promo discounts apply only to eligible product sales. Delivery and service fees are charged separately.</Text>
+              <Text style={styles.checkoutFeeHint}>The buyer pays any processing fee shown by Monnify. It is separate from the order total above.</Text>
             </View>
             {usePaymentSimulator ? (
               <View style={styles.paymentSetupNotice}>
@@ -8800,7 +8812,7 @@ function AppContent() {
             ) : (
               <View style={styles.paymentSetupNotice}>
                 <Ionicons color="#8A5A10" name="information-circle-outline" size={20} />
-                <Text style={styles.paymentSetupNoticeText}>Sandbox payments only. Seller and rider payouts remain on hold until you confirm delivery.</Text>
+                <Text style={styles.paymentSetupNoticeText}>After payment, Monnify splits each store’s item proceeds to its configured subaccount. Refunds after payment may require manual recovery from sellers through GetBuy support.</Text>
               </View>
             )}
             {!location.trim() ? <Text style={styles.formHint}>Add a delivery address to prepare your order.</Text> : null}
@@ -9431,8 +9443,8 @@ function NotificationButton({ unreadCount, onPress }: { unreadCount: number; onP
   );
 }
 
-function Field({ label, value, onChangeText, placeholder, secureTextEntry, keyboardType, multiline, invalid = false }: { label: string; value: string; onChangeText: (value: string) => void; placeholder: string; secureTextEntry?: boolean; keyboardType?: 'email-address' | 'decimal-pad' | 'numeric' | 'phone-pad' | 'default'; multiline?: boolean; invalid?: boolean }) {
-  return <View style={styles.field}><Text style={[styles.fieldLabel, invalid && styles.fieldLabelError]}>{label}</Text><TextInput autoCapitalize="none" keyboardType={keyboardType} multiline={multiline} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor="#8B9DB2" secureTextEntry={secureTextEntry} style={[styles.input, multiline && styles.multilineInput, invalid && styles.inputError]} value={value} /></View>;
+function Field({ label, value, onChangeText, placeholder, secureTextEntry, keyboardType, autoCapitalize = 'none', multiline, invalid = false }: { label: string; value: string; onChangeText: (value: string) => void; placeholder: string; secureTextEntry?: boolean; keyboardType?: 'email-address' | 'decimal-pad' | 'numeric' | 'phone-pad' | 'default'; autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters'; multiline?: boolean; invalid?: boolean }) {
+  return <View style={styles.field}><Text style={[styles.fieldLabel, invalid && styles.fieldLabelError]}>{label}</Text><TextInput autoCapitalize={autoCapitalize} keyboardType={keyboardType} multiline={multiline} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor="#8B9DB2" secureTextEntry={secureTextEntry} style={[styles.input, multiline && styles.multilineInput, invalid && styles.inputError]} value={value} /></View>;
 }
 
 function Terms({ onOpen }: { onOpen: () => void }) {

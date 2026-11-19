@@ -43,8 +43,9 @@ export function createAdminClient(env: MonnifyEnvironment): SupabaseClient {
 
 export function getMonnifyBaseUrl() {
   const environment = Deno.env.get('MONNIFY_ENVIRONMENT') || 'sandbox';
-  if (environment !== 'sandbox') throw new Error('Only Monnify sandbox mode is enabled in this integration.');
-  return 'https://sandbox.monnify.com';
+  if (environment === 'sandbox') return 'https://sandbox.monnify.com';
+  if (environment === 'production') return 'https://api.monnify.com';
+  throw new Error('MONNIFY_ENVIRONMENT must be set to sandbox or production.');
 }
 
 export async function getAccessToken(env: MonnifyEnvironment) {
@@ -54,7 +55,7 @@ export async function getAccessToken(env: MonnifyEnvironment) {
   });
   const payload = await response.json();
   if (!response.ok || payload.requestSuccessful !== true || !payload.responseBody?.accessToken) {
-    throw new Error('Monnify sandbox authentication failed. Confirm the test API credentials in the secure function settings.');
+    throw new Error('Monnify authentication failed. Confirm the API credentials for the configured environment in the secure function settings.');
   }
   return payload.responseBody.accessToken as string;
 }

@@ -80,15 +80,18 @@ Deno.serve(async (request) => {
         || !Number.isInteger(payload.loyalty_points) || payload.loyalty_points < 0) {
         return respond({ error: 'Choose a delivery date and a valid rewards amount.' }, 400);
       }
+      if (payload.promo_code?.trim() || payload.loyalty_points !== 0) {
+        return respond({ error: 'Promos and rewards are unavailable for seller-split orders.' }, 400);
+      }
 
       const { data: orderId, error: orderError } = await userClient.rpc('create_marketplace_order_with_blending_options', {
         p_delivery_address: payload.delivery_address.trim(),
         p_payment_method: 'monnify',
         p_cart_items: cartItems,
         p_delivery_slot: payload.delivery_slot,
-        p_promo_code: payload.promo_code?.trim() || null,
+        p_promo_code: null,
         p_delivery_date: payload.delivery_date,
-        p_loyalty_points: payload.loyalty_points,
+        p_loyalty_points: 0,
       });
       if (orderError) throw orderError;
       if (typeof orderId !== 'string' || !orderId) throw new Error('GetBuy could not create the test order.');

@@ -21,6 +21,84 @@ function respond(body: Record<string, unknown>, status = 200) {
   });
 }
 
+async function prepareStoreSplits(admin: ReturnType<typeof createAdminClient>, orderId: string, orderTotal: number) {
+  const { data: items, error: itemsError } = await admin.from('order_items')
+    .select('product_id, quantity, unit_price')
+    .eq('order_id', orderId);
+  if (itemsError) throw itemsError;
+  if (!items?.length) throw new Error('The order does not contain any seller items.');
+
+  const productIds = [...new Set(items.map((item) => item.product_id as string))];
+  const { data: products, error: productsError } = await admin.from('products')
+    .select('id, store_id')
+    .in('id', productIds);
+  if (productsError) throw productsError;
+  const productsById = new Map((products || []).map((product) => [product.id as string, product]));
+  const storeIds = [...new Set((products || []).map((product) => product.store_id as string))];
+  if (productsById.size !== productIds.length || storeIds.length === 0) {
+    throw new Error('One or more order items are no longer linked to a store.');
+  }
+
+  const [{ data: stores, error: storesError }, { data: subaccounts, error: subaccountsError }] = await Promise.all([
+    admin.from('stores').select('id, name, owner_id').in('id', storeIds),
+    admin.from('store_monnify_subaccounts').select('store_id, sub_account_code').in('store_id', storeIds),
+  ]);
+  if (storesError) throw storesError;
+  if (subaccountsError) throw subaccountsError;
+  const storesById = new Map((stores || []).map((store) => [store.id as string, store]));
+  const subaccountsByStore = new Map((subaccounts || []).map((subaccount) => [subaccount.store_id as string, subaccount.sub_account_code as string]));
+  const amountsByStore = new Map<string, number>();
+
+  for (const item of items) {
+    const product = productsById.get(item.product_id as string);
+    if (!product) throw new Error('An order item is no longer linked to a product.');
+    const storeId = product.store_id as string;
+    const lineAmount = Number(item.quantity) * Number(item.unit_price);
+    if (!Number.isFinite(lineAmount) || lineAmount <= 0) throw new Error('An order item has an invalid seller amount.');
+    amountsByStore.set(storeId, (amountsByStore.get(storeId) || 0) + lineAmount);
+  }
+
+  const missingStores: string[] = [];
+  const splits = [...amountsByStore.entries()].map(([storeId, rawAmount]) => {
+    const store = storesById.get(storeId);
+    const subAccountCode = subaccountsByStore.get(storeId);
+    if (!store?.owner_id) throw new Error('A store is missing its seller account.');
+    if (!subAccountCode) {
+      missingStores.push(store.name as string || storeId);
+      return null;
+    }
+    return {
+      storeId,
+      beneficiaryId: store.owner_id as string,
+      subAccountCode,
+      amount: Math.round(rawAmount * 100) / 100,
+    };
+  });
+  if (missingStores.length) {
+    throw new Error(`Monnify seller subaccounts are not configured for: ${missingStores.join(', ')}.`);
+  }
+  const validSplits = splits.filter((split): split is NonNullable<typeof split> => split !== null);
+  const totalSplit = validSplits.reduce((sum, split) => sum + split.amount, 0);
+  if (totalSplit <= 0 || totalSplit > orderTotal + 0.01) {
+    throw new Error('Seller split amounts do not match the order total.');
+  }
+
+  const { error: saveError } = await admin.from('monnify_order_splits').insert(validSplits.map((split) => ({
+    order_id: orderId,
+    store_id: split.storeId,
+    beneficiary_id: split.beneficiaryId,
+    sub_account_code: split.subAccountCode,
+    amount: split.amount,
+  })));
+  if (saveError) throw saveError;
+
+  return validSplits.map((split) => ({
+    subAccountCode: split.subAccountCode,
+    splitAmount: split.amount,
+    feeBearer: false,
+  }));
+}
+
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   if (request.method !== 'POST') return respond({ error: 'Method not allowed.' }, 405);
@@ -91,6 +169,9 @@ Deno.serve(async (request) => {
         }
       }
       if (cartItems.length > 100) return respond({ error: 'This cart has too many items.' }, 400);
+      if (payload.promo_code?.trim() || (payload.loyalty_points || 0) > 0) {
+        return respond({ error: 'Promos and rewards are unavailable for seller-split orders.' }, 400);
+      }
       if (!['morning', 'afternoon', 'evening'].includes(payload.delivery_slot || '')) {
         return respond({ error: 'Choose a valid delivery time window.' }, 400);
       }
@@ -115,6 +196,7 @@ Deno.serve(async (request) => {
         if (!order || order.buyer_id !== userData.user.id || !order.payment_reference) {
           throw new Error('Could not confirm the new order details.');
         }
+        const incomeSplitConfig = await prepareStoreSplits(admin, order.id, Number(order.total));
         const { data: profile, error: profileError } = await admin.from('profiles')
           .select('full_name').eq('id', userData.user.id).maybeSingle();
         if (profileError) throw profileError;
@@ -135,6 +217,7 @@ Deno.serve(async (request) => {
             contractCode: env.contractCode,
             redirectUrl: redirectUrl.toString(),
             paymentMethods: [payload.payment_method === 'bank_transfer' ? 'ACCOUNT_TRANSFER' : 'CARD'],
+            incomeSplitConfig,
           }),
         });
         const transaction = await response.json();
