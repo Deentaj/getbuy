@@ -3,7 +3,15 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/admin-panel",
+      "destination": "/admin-panel/index.html"
+    },
+    {
+      "source": "/admin-panel/",
+      "destination": "/admin-panel/index.html"
+    },
+    {
+      "source": "/:path((?!admin-panel).*)",
       "destination": "/index.html"
     }
   ]
