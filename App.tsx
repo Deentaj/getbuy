@@ -1101,6 +1101,7 @@ function AppContent() {
   const [signupPhone, setSignupPhone] = useState('');
   const [signupCode, setSignupCode] = useState('');
   const [signupNotice, setSignupNotice] = useState('');
+  const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
@@ -1280,7 +1281,7 @@ function AppContent() {
   const [isBiometricBusy, setIsBiometricBusy] = useState(false);
   const authCallbackInFlight = useRef(false);
   const processedAuthUrls = useRef(new Set<string>());
-  const pendingOAuthRole = useRef<{ role: Role; isSignup: boolean; phoneNumber: string } | null>(null);
+  const pendingOAuthRole = useRef<{ role: Role; isSignup: boolean; phoneNumber: string; hasAcceptedTerms: boolean } | null>(null);
   const sessionRestoreStarted = useRef(false);
   const checkoutAfterAuth = useRef(false);
   const currentScreen = useRef(screen);
@@ -1896,6 +1897,16 @@ function AppContent() {
 
         const oauthIntent = pendingOAuthRole.current;
         let requestedRole: Role | null = null;
+        if (oauthIntent?.isSignup) {
+          if (!oauthIntent.hasAcceptedTerms) throw new Error('Please read and agree to the Terms and Conditions before creating your account.');
+          const { error: consentError } = await supabase.auth.updateUser({
+            data: {
+              terms_accepted_at: new Date().toISOString(),
+              terms_version: TERMS_LAST_UPDATED,
+            },
+          });
+          if (consentError) throw consentError;
+        }
         if (oauthIntent?.isSignup && oauthIntent.role !== 'buyer' && oauthIntent.role !== 'admin') {
           const { error } = await supabase.rpc('set_oauth_signup_role', { p_role: oauthIntent.role });
           if (error) throw error;
@@ -3780,6 +3791,10 @@ function AppContent() {
   const createAccount = async () => {
     setAuthError('');
     setSignupNotice('');
+    if (!hasAcceptedTerms) {
+      setAuthError('Please read and agree to the Terms and Conditions before creating your account.');
+      return;
+    }
     const accountName = [firstName.trim(), surname.trim()].filter(Boolean).join(' ');
     if (!isSupabaseConfigured) {
       setAuthError('Account creation requires Supabase configuration.');
@@ -3814,6 +3829,8 @@ function AppContent() {
           data: {
             full_name: accountName,
             role,
+            terms_accepted_at: new Date().toISOString(),
+            terms_version: TERMS_LAST_UPDATED,
             ...(role === 'buyer' || role === 'seller' || role === 'delivery' ? { phone_number: signupPhone.trim() } : {}),
           },
         },
@@ -4005,6 +4022,10 @@ function AppContent() {
 
   const signInWithProvider = async (provider: 'google' | 'facebook' | 'apple') => {
     setAuthError('');
+    if (screen === 'create' && !hasAcceptedTerms) {
+      setAuthError('Please read and agree to the Terms and Conditions before creating your account.');
+      return;
+    }
     if (!isSupabaseConfigured) {
       setAuthError('Social sign-in requires Supabase configuration.');
       return;
@@ -4022,6 +4043,7 @@ function AppContent() {
       role: role || 'buyer',
       isSignup: screen === 'create',
       phoneNumber: signupPhone.trim(),
+      hasAcceptedTerms: screen === 'create' && hasAcceptedTerms,
     };
     try {
       const redirectTo = Platform.OS === 'web'
@@ -5513,6 +5535,12 @@ function AppContent() {
     setScreen('terms');
   };
 
+  const beginAccountCreation = () => {
+    setHasAcceptedTerms(false);
+    setAuthError('');
+    setScreen('create');
+  };
+
   const goBack = () => {
     if (screen === 'welcome') return;
     if (screen === 'terms') setScreen(termsReturnScreen);
@@ -5521,7 +5549,7 @@ function AppContent() {
       setAuthError('');
       setSignupNotice('');
       setSignupCode('');
-      setScreen('create');
+      beginAccountCreation();
     }
     else if (screen === 'forgotPassword') {
       setRecoveryError('');
@@ -5671,7 +5699,7 @@ function AppContent() {
           <View style={[styles.roleChoiceRadio, role === 'delivery' && styles.roleChoiceRadioSelected]}>{role === 'delivery' ? <Ionicons color="#FFF" name="checkmark" size={17} /> : null}</View>
         </Pressable>
 
-        <Pressable onPress={() => { setAuthError(''); if (!role) setRole('buyer'); setScreen('create'); }} style={styles.roleChoicePrimaryButton}>
+        <Pressable onPress={() => { if (!role) setRole('buyer'); beginAccountCreation(); }} style={styles.roleChoicePrimaryButton}>
           <Text style={styles.roleChoicePrimaryButtonText}>{role === 'seller' ? 'Continue as a seller' : role === 'delivery' ? 'Continue as a delivery partner' : 'Continue as a buyer'}</Text>
         </Pressable>
         {authError ? <Text style={styles.authError}>{authError}</Text> : null}
@@ -7106,7 +7134,7 @@ function AppContent() {
           </>
         ) : (
           <>
-            <Pressable accessibilityRole="button" onPress={() => setScreen('create')} style={({ pressed }) => [styles.authWelcomePrimaryButton, pressed && styles.pressedButton]}>
+            <Pressable accessibilityRole="button" onPress={beginAccountCreation} style={({ pressed }) => [styles.authWelcomePrimaryButton, pressed && styles.pressedButton]}>
               <Text style={styles.authWelcomePrimaryText}>Create {role === 'buyer' ? 'buyer' : role === 'seller' ? 'seller' : 'delivery'} account</Text>
               <Ionicons color="#D5F0FF" name="arrow-forward" size={22} style={styles.authWelcomeArrow} />
             </Pressable>
@@ -7168,12 +7196,24 @@ function AppContent() {
         {confirmPassword && password !== confirmPassword ? <Text style={styles.authError}>Passwords do not match.</Text> : null}
         <Text style={styles.formHint}>Use at least 8 characters. You can reveal it to check.</Text>
         <Text style={styles.accountTerms}>
-          Your account is used to manage your orders and account details.{' '}
-          <Text onPress={() => openTerms('create')} style={styles.termsLink}>Read the Terms and Conditions</Text>.
+          Your account is used to manage your orders and account details. Review the{' '}
+          <Text accessibilityRole="link" onPress={() => openTerms('create')} style={styles.termsLink}>Terms and Conditions</Text> before continuing.
         </Text>
+        <Pressable
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: hasAcceptedTerms }}
+          disabled={isSubmittingAuth}
+          onPress={() => setHasAcceptedTerms((accepted) => !accepted)}
+          style={styles.termsAgreementRow}
+        >
+          <View style={[styles.rememberLoginCheckbox, hasAcceptedTerms && styles.rememberLoginCheckboxSelected]}>
+            {hasAcceptedTerms ? <Ionicons color="#FFF" name="checkmark" size={14} /> : null}
+          </View>
+          <Text style={styles.termsAgreementLabel}>I have read and agree to the Terms and Conditions.</Text>
+        </Pressable>
         <PrimaryButton
           label={isSubmittingAuth ? 'Creating account...' : role === 'buyer' ? 'Create buyer account' : 'Create account'}
-          disabled={isSubmittingAuth || !firstName.trim() || !surname.trim() || password.length < 8 || !email.trim() || signupPhone.replace(/\D/g, '').length < 10 || !confirmPassword || password !== confirmPassword}
+          disabled={isSubmittingAuth || !hasAcceptedTerms || !firstName.trim() || !surname.trim() || password.length < 8 || !email.trim() || signupPhone.replace(/\D/g, '').length < 10 || !confirmPassword || password !== confirmPassword}
           onPress={createAccount}
         />
         <View style={styles.authDivider}><View style={styles.authDividerLine} /><Text style={styles.authDividerText}>or sign up with</Text><View style={styles.authDividerLine} /></View>
@@ -7182,10 +7222,10 @@ function AppContent() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Continue with ${provider}`}
-              disabled={isSubmittingAuth}
+              disabled={isSubmittingAuth || !hasAcceptedTerms}
               key={provider}
               onPress={() => signInWithProvider(provider)}
-              style={[styles.socialButton, isSubmittingAuth && styles.disabledButton]}
+              style={[styles.socialButton, (isSubmittingAuth || !hasAcceptedTerms) && styles.disabledButton]}
             >
               <Ionicons color="#143A73" name={({ google: 'logo-google', facebook: 'logo-facebook', apple: 'logo-apple' } as const)[provider]} size={18} />
               <Text style={styles.socialButtonLabel}>{provider === 'apple' ? 'Apple' : provider === 'google' ? 'Google' : 'Facebook'}</Text>
@@ -7468,7 +7508,7 @@ function AppContent() {
         {authError ? <Text style={styles.authError}>{authError}</Text> : null}
         {role !== 'admin' ? (
           <>
-            <Pressable onPress={() => role ? setScreen('create') : setScreen('roleChoice')} style={styles.registeredLink}><Text style={styles.registeredLinkText}>New here? Create an account</Text></Pressable>
+            <Pressable onPress={() => role ? beginAccountCreation() : setScreen('roleChoice')} style={styles.registeredLink}><Text style={styles.registeredLinkText}>New here? Create an account</Text></Pressable>
             <View style={styles.accountInfoCard}><Text style={styles.accountTerms}>Your account determines the dashboard you see.</Text></View>
           </>
         ) : null}
@@ -9640,6 +9680,8 @@ const styles = StyleSheet.create({
   rememberLoginRow: { alignItems: 'center', alignSelf: 'flex-start', flexDirection: 'row', marginBottom: 14, marginTop: -4, minHeight: 36, paddingRight: 8 },
   rememberLoginCheckbox: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#A8C4E2', borderRadius: 6, borderWidth: 1.5, height: 20, justifyContent: 'center', marginRight: 9, width: 20 },
   rememberLoginCheckboxSelected: { backgroundColor: '#143A73', borderColor: '#143A73' },
+  termsAgreementRow: { alignItems: 'flex-start', flexDirection: 'row', marginTop: 16, paddingVertical: 6 },
+  termsAgreementLabel: { color: '#334C69', flex: 1, fontSize: 14, lineHeight: 21 },
   rememberLoginCheck: { color: '#FFF', fontSize: 13, fontWeight: '800', lineHeight: 16 },
   rememberLoginLabel: { color: '#536A86', fontSize: 13, fontWeight: '600' },
   authDivider: { alignItems: 'center', flexDirection: 'row', gap: 12, marginTop: 20 },

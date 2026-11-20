@@ -12,6 +12,7 @@ alter table public.store_monnify_subaccounts enable row level security;
 revoke all on public.store_monnify_subaccounts from anon, authenticated;
 grant select on public.store_monnify_subaccounts to authenticated;
 
+drop policy if exists "Admins can view store Monnify subaccounts" on public.store_monnify_subaccounts;
 create policy "Admins can view store Monnify subaccounts"
   on public.store_monnify_subaccounts for select
   using (exists (
@@ -36,6 +37,7 @@ alter table public.monnify_order_splits enable row level security;
 revoke all on public.monnify_order_splits from anon, authenticated;
 grant select on public.monnify_order_splits to authenticated;
 
+drop policy if exists "Admins can view Monnify order splits" on public.monnify_order_splits;
 create policy "Admins can view Monnify order splits"
   on public.monnify_order_splits for select
   using (exists (
@@ -43,6 +45,7 @@ create policy "Admins can view Monnify order splits"
     where profiles.id = auth.uid() and profiles.role = 'admin'
   ));
 
+drop policy if exists "Sellers can view their Monnify order splits" on public.monnify_order_splits;
 create policy "Sellers can view their Monnify order splits"
   on public.monnify_order_splits for select
   using (beneficiary_id = auth.uid());
