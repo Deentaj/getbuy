@@ -3,7 +3,7 @@
 :root{font-family:"DM Sans",Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17283f;background:#f3f6fa;font-synthesis:none;text-rendering:optimizeLegibility;font-smooth:always;font-weight:400}
 *{box-sizing:border-box}
 body{margin:0;min-width:320px;min-height:100vh}
-button,input{font:inherit}
+button,input,textarea,select{font:inherit}
 button{cursor:pointer}
 button:disabled{cursor:not-allowed;opacity:.6}
 a{color:#14539a}
@@ -90,6 +90,10 @@ td small{display:block;margin-top:3px;color:#95a1af;font-size:10px}
 .payout-transfer-row{display:flex;gap:8px;margin-top:12px}
 .payout-transfer-row input{min-width:0;flex:1;height:36px;padding:0 10px;border:1px solid #dce4ed;border-radius:8px;outline:none;color:#1c3554;font-size:11px}
 .payout-transfer-row input:focus{border-color:#4380bd;box-shadow:0 0 0 3px #4380bd20}
+.support-field{display:grid;gap:6px;margin-top:12px;color:#496354;font-size:11px;font-weight:700}
+.support-field input,.support-field textarea,.support-field select{width:100%;min-height:37px;padding:9px 10px;border:1px solid #dfe9e2;border-radius:9px;outline:none;background:#fff;color:#29443a;font-size:11px}
+.support-field textarea{min-height:78px;resize:vertical;line-height:1.5}
+.support-field input:focus,.support-field textarea:focus,.support-field select:focus{border-color:#62a57f;box-shadow:0 0 0 3px #34865a1a}
 .payout-transfer-row .button{flex:0 0 auto}
 .collection-account-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:end;gap:10px}
 .collection-account-form label{display:grid;gap:6px;color:#344a64;font-size:10px;font-weight:700}

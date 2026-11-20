@@ -5,10 +5,10 @@ import getBuyLogo from '../../assets/getbuy-logo.svg?url';
 import getBuyLogoInverse from '../../assets/getbuy-logo-inverse.svg?url';
 import { supabase, supabaseConfigured } from './supabase';
 
-type Tab = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'payouts';
+type Tab = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'support' | 'payouts';
 type PeopleRoleFilter = 'all' | 'buyer' | 'seller' | 'delivery';
 type RiderFilter = 'all' | 'available' | 'offline' | 'verified' | 'needs-review';
-type IconName = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'payouts' | 'check' | 'arrow-right' | 'refresh' | 'search' | 'external';
+type IconName = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'support' | 'payouts' | 'check' | 'arrow-right' | 'refresh' | 'search' | 'external';
 type FinanceData = {
   collection_account: { bank_name: string; account_name: string; account_number: string } | null;
   payouts: Array<{
@@ -58,6 +58,38 @@ type StoreRequest = {
 type StoreMonnifySubaccount = {
   store_id: string;
   sub_account_code: string;
+};
+type SupportIssue = {
+  id: string;
+  order_id: string;
+  buyer_id: string;
+  buyer_name?: string;
+  issue_type: string;
+  description: string;
+  status: string;
+  admin_note: string;
+  created_at: string;
+};
+type CancellationRequest = {
+  id: string;
+  order_id: string;
+  buyer_id: string;
+  buyer_name?: string;
+  reason: string;
+  status: string;
+  admin_note: string;
+  created_at: string;
+};
+type RefundRequest = {
+  id: string;
+  order_id: string;
+  buyer_id: string;
+  buyer_name?: string;
+  amount: number;
+  status: string;
+  provider_reference: string | null;
+  admin_note: string;
+  created_at: string;
 };
 type RiderRequest = {
   verification_id: string;
@@ -130,6 +162,7 @@ const tabs: Array<{ id: Tab; label: string; icon: IconName }> = [
   { id: 'stores', label: 'Stores', icon: 'stores' },
   { id: 'products', label: 'Products', icon: 'products' },
   { id: 'people', label: 'People & riders', icon: 'people' },
+  { id: 'support', label: 'Support & refunds', icon: 'support' },
   { id: 'payouts', label: 'Payouts', icon: 'payouts' },
 ];
 
@@ -140,6 +173,7 @@ function Icon({ name }: { name: IconName }) {
     stores: <><path d="M3 10h18l-1.5-6h-15z" /><path d="M5 10v10h14V10M9 20v-6h6v6M3 10c0 2 3 2 3 0 0 2 3 2 3 0 0 2 3 2 3 0 0 2 3 2 3 0 0 2 3 2 3 0" /></>,
     products: <><path d="m12 3 9 5v8l-9 5-9-5V8z" /><path d="m3.5 8.5 8.5 5 8.5-5M12 13.5V21M7.5 5.5l9 5" /></>,
     people: <><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 5.5a3.5 3.5 0 0 1 0 6.8M18 14a5.5 5.5 0 0 1 3.5 5.2" /></>,
+    support: <><path d="M4 13v-2a8 8 0 0 1 16 0v2" /><path d="M4 13H3v4h4v-5H4zM20 13h1v4h-4v-5h3zM17 20c-1 1-2.5 1-5 1" /></>,
     payouts: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18M7 15h4" /><circle cx="16.5" cy="14.5" r="1.5" /></>,
     check: <path d="m5 12 4 4L19 6" />,
     'arrow-right': <><path d="M5 12h14M13 6l6 6-6 6" /></>,
@@ -168,7 +202,7 @@ function Status({ value }: { value: string }) {
   const normalized = value.toLowerCase();
   const tone = ['verified', 'completed', 'available', 'listed', 'ready', 'confirmed', 'paid', 'remittance confirmed', 'payment verified'].includes(normalized)
     ? 'green'
-    : ['pending', 'pending review', 'preparing', 'accepted', 'waiting for remittance', 'waiting for buyer confirmation'].includes(normalized)
+    : ['pending', 'pending review', 'pending manual', 'in review', 'preparing', 'accepted', 'waiting for remittance', 'waiting for buyer confirmation'].includes(normalized)
       ? 'amber'
       : 'gray';
   return <span className={`status status-${tone}`}>{value.replaceAll('_', ' ')}</span>;
@@ -197,6 +231,12 @@ export default function AdminApp() {
   const [storeSubaccountDrafts, setStoreSubaccountDrafts] = useState<Record<string, string>>({});
   const [riderRequests, setRiderRequests] = useState<RiderRequest[]>([]);
   const [finance, setFinance] = useState<FinanceData>({ collection_account: null, payouts: [], remittances: [] });
+  const [supportIssues, setSupportIssues] = useState<SupportIssue[]>([]);
+  const [cancellationRequests, setCancellationRequests] = useState<CancellationRequest[]>([]);
+  const [refundRequests, setRefundRequests] = useState<RefundRequest[]>([]);
+  const [supportIssueNotes, setSupportIssueNotes] = useState<Record<string, string>>({});
+  const [cancellationNotes, setCancellationNotes] = useState<Record<string, string>>({});
+  const [refundDrafts, setRefundDrafts] = useState<Record<string, { status: string; reference: string; note: string }>>({});
   const [transferReferences, setTransferReferences] = useState<Record<string, string>>({});
   const [collectionBankName, setCollectionBankName] = useState('');
   const [collectionAccountName, setCollectionAccountName] = useState('');
@@ -264,21 +304,46 @@ export default function AdminApp() {
         { data: storeSubaccountData, error: storeSubaccountError },
         { data: riderData, error: riderError },
         { data: financeData, error: financeError },
+        { data: issueData, error: issueError },
+        { data: cancellationData, error: cancellationError },
+        { data: refundData, error: refundError },
       ] = await Promise.all([
         supabase.rpc('get_admin_dashboard_snapshot'),
         supabase.rpc('get_store_verification_queue'),
         supabase.from('store_monnify_subaccounts').select('store_id, sub_account_code'),
         supabase.rpc('get_rider_verification_queue'),
         supabase.rpc('get_admin_finance_dashboard'),
+        supabase.from('order_issues')
+          .select('id, order_id, buyer_id, issue_type, description, status, admin_note, created_at')
+          .order('created_at', { ascending: false }).limit(100),
+        supabase.from('order_cancellation_requests')
+          .select('id, order_id, buyer_id, reason, status, admin_note, created_at')
+          .order('created_at', { ascending: false }).limit(100),
+        supabase.from('order_refunds')
+          .select('id, order_id, buyer_id, amount, status, provider_reference, admin_note, created_at')
+          .order('created_at', { ascending: false }).limit(100),
       ]);
       if (snapshotError) throw snapshotError;
       if (storeError) throw storeError;
       if (storeSubaccountError) throw storeSubaccountError;
       if (riderError) throw riderError;
       if (financeError) throw financeError;
+      if (issueError) throw issueError;
+      if (cancellationError) throw cancellationError;
+      if (refundError) throw refundError;
       if (!snapshotData || typeof snapshotData !== 'object') throw new Error('Admin dashboard returned an invalid response.');
       if (!financeData || typeof financeData !== 'object') throw new Error('Admin finance dashboard returned an invalid response.');
 
+      const relatedBuyerIds = [...new Set([
+        ...((issueData || []) as SupportIssue[]).map((row) => row.buyer_id),
+        ...((cancellationData || []) as CancellationRequest[]).map((row) => row.buyer_id),
+        ...((refundData || []) as RefundRequest[]).map((row) => row.buyer_id),
+      ])];
+      const { data: buyerProfiles, error: buyerProfilesError } = relatedBuyerIds.length
+        ? await supabase.from('profiles').select('id, full_name').in('id', relatedBuyerIds)
+        : { data: [], error: null };
+      if (buyerProfilesError) throw buyerProfilesError;
+      const buyerNames = new Map((buyerProfiles || []).map((profile) => [profile.id, profile.full_name]));
       const signedUrl = async (path: string | null) => {
         if (!path) return undefined;
         const { data, error: urlError } = await supabase.storage
@@ -308,6 +373,9 @@ export default function AdminApp() {
       setStoreSubaccountDrafts(storeCodes);
       setRiderRequests(signedRiders);
       setFinance(financeData as FinanceData);
+      setSupportIssues(((issueData || []) as SupportIssue[]).map((row) => ({ ...row, buyer_name: buyerNames.get(row.buyer_id) || '' })));
+      setCancellationRequests(((cancellationData || []) as CancellationRequest[]).map((row) => ({ ...row, buyer_name: buyerNames.get(row.buyer_id) || '' })));
+      setRefundRequests(((refundData || []) as RefundRequest[]).map((row) => ({ ...row, buyer_name: buyerNames.get(row.buyer_id) || '' })));
       const collectionAccount = (financeData as FinanceData).collection_account;
       setCollectionBankName(collectionAccount?.bank_name || '');
       setCollectionAccountName(collectionAccount?.account_name || '');
@@ -468,8 +536,68 @@ export default function AdminApp() {
     }
   };
 
+  const updateSupportIssue = async (issue: SupportIssue, status: 'open' | 'in_review' | 'resolved') => {
+    setBusyId(issue.id);
+    setError('');
+    try {
+      const { error: updateError } = await supabase.rpc('update_order_issue', {
+        p_issue_id: issue.id,
+        p_status: status,
+        p_admin_note: supportIssueNotes[issue.id] ?? issue.admin_note,
+      });
+      if (updateError) throw updateError;
+      await loadDashboard();
+    } catch (updateError: unknown) {
+      setError(messageOf(updateError));
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  const reviewCancellation = async (request: CancellationRequest, approve: boolean) => {
+    setBusyId(request.id);
+    setError('');
+    try {
+      const { error: reviewError } = await supabase.rpc('admin_review_order_cancellation', {
+        p_request_id: request.id,
+        p_approve: approve,
+        p_admin_note: cancellationNotes[request.id] ?? request.admin_note,
+      });
+      if (reviewError) throw reviewError;
+      await loadDashboard();
+    } catch (reviewError: unknown) {
+      setError(messageOf(reviewError));
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  const updateRefund = async (refund: RefundRequest) => {
+    const draft = refundDrafts[refund.id] || {
+      status: refund.status === 'pending_manual' ? 'processing' : refund.status,
+      reference: refund.provider_reference || '',
+      note: refund.admin_note || '',
+    };
+    setBusyId(refund.id);
+    setError('');
+    try {
+      const { error: updateError } = await supabase.rpc('admin_update_order_refund', {
+        p_refund_id: refund.id,
+        p_status: draft.status,
+        p_provider_reference: draft.reference,
+        p_admin_note: draft.note,
+      });
+      if (updateError) throw updateError;
+      await loadDashboard();
+    } catch (updateError: unknown) {
+      setError(messageOf(updateError));
+    } finally {
+      setBusyId('');
+    }
+  };
+
   const filtered = useMemo(() => {
-    if (!snapshot) return { orders: [], stores: [], products: [], users: [], payouts: [] };
+    if (!snapshot) return { orders: [], stores: [], products: [], users: [], payouts: [], supportIssues: [], cancellations: [], refunds: [] };
     const query = search.trim().toLowerCase();
     return {
       orders: snapshot.orders.filter((row) => `${row.id} ${row.status} ${row.buyer_name} ${row.delivery_address}`.toLowerCase().includes(query)),
@@ -477,8 +605,11 @@ export default function AdminApp() {
       products: snapshot.products.filter((row) => `${row.name} ${row.category} ${row.store_name}`.toLowerCase().includes(query)),
       users: snapshot.users.filter((row) => `${row.full_name} ${row.role} ${row.area}`.toLowerCase().includes(query)),
       payouts: finance.payouts.filter((row) => `${row.order_id} ${row.beneficiary_name} ${row.beneficiary_email} ${row.payout_type}`.toLowerCase().includes(query)),
+      supportIssues: supportIssues.filter((row) => `${row.order_id} ${row.buyer_id} ${row.buyer_name || ''} ${row.issue_type} ${row.description} ${row.status}`.toLowerCase().includes(query)),
+      cancellations: cancellationRequests.filter((row) => `${row.order_id} ${row.buyer_id} ${row.buyer_name || ''} ${row.reason} ${row.status}`.toLowerCase().includes(query)),
+      refunds: refundRequests.filter((row) => `${row.order_id} ${row.buyer_id} ${row.buyer_name || ''} ${row.status} ${row.provider_reference || ''}`.toLowerCase().includes(query)),
     };
-  }, [finance.payouts, search, snapshot]);
+  }, [cancellationRequests, finance.payouts, refundRequests, search, snapshot, supportIssues]);
   const peopleCounts = useMemo(() => {
     const users = snapshot?.users || [];
     return {
@@ -523,6 +654,13 @@ export default function AdminApp() {
               <span className="nav-icon"><Icon name={item.icon} /></span><span>{item.label}</span>
               {item.id === 'stores' && (snapshot?.metrics.pending_verification || 0) > 0 ? <span className="nav-count">{snapshot?.metrics.pending_verification}</span> : null}
               {item.id === 'people' && (snapshot?.metrics.pending_rider_verification || 0) > 0 ? <span className="nav-count">{snapshot?.metrics.pending_rider_verification}</span> : null}
+              {item.id === 'support' && supportIssues.filter((issue) => issue.status !== 'resolved').length
+                + cancellationRequests.filter((request) => request.status === 'pending').length
+                + refundRequests.filter((refund) => ['pending_manual', 'processing'].includes(refund.status)).length > 0
+                ? <span className="nav-count">{supportIssues.filter((issue) => issue.status !== 'resolved').length
+                  + cancellationRequests.filter((request) => request.status === 'pending').length
+                  + refundRequests.filter((refund) => ['pending_manual', 'processing'].includes(refund.status)).length}</span>
+                : null}
             </button>
           ))}
         </nav>
@@ -558,7 +696,7 @@ export default function AdminApp() {
             </>
           ) : null}
 
-          {tab !== 'overview' ? <div className="search-bar"><Icon name="search" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`Search ${tab === 'people' ? 'people and riders' : tab}…`} /></div> : null}
+          {tab !== 'overview' ? <div className="search-bar"><Icon name="search" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`Search ${tab === 'people' ? 'people and riders' : tab === 'support' ? 'support cases and refunds' : tab}…`} /></div> : null}
 
           {tab === 'orders' && snapshot ? <section className="panel"><div className="section-heading"><div><h2>Orders</h2><p>Showing latest {filtered.orders.length} orders</p></div></div><OrderTable rows={filtered.orders} /></section> : null}
 
@@ -624,6 +762,76 @@ export default function AdminApp() {
                   ))}
                 </div>
                 <div className="table-wrap"><table><thead><tr><th>NAME</th><th>ACCOUNT TYPE</th><th>AREA</th><th>JOINED</th></tr></thead><tbody>{filteredPeople.map((user) => <tr key={user.id}><td><b>{user.full_name || 'Unnamed account'}</b></td><td><RoleBadge role={user.role} /></td><td>{user.area || '—'}</td><td>{new Date(user.created_at).toLocaleDateString()}</td></tr>)}</tbody></table>{filteredPeople.length === 0 ? <Empty>No accounts match this role and search.</Empty> : null}</div>
+              </section>
+            </>
+          ) : null}
+          {tab === 'support' ? (
+            <>
+              <section className="panel">
+                <div className="section-heading"><div><h2>Customer email</h2><p>Shared address: support@getbuy.com.ng · General emails are not yet imported into this queue.</p></div><Status value="Email not connected" /></div>
+                <p className="review-detail">Handle incoming email in its existing mailbox for now. Once the mailbox provider is confirmed, it can be connected so email conversations appear alongside these cases.</p>
+              </section>
+              <section className="panel">
+                <div className="section-heading"><div><h2>Buyer issue reports</h2><p>Order-linked reports from customers. Replies and status changes notify the buyer in the app.</p></div><Status value={`${supportIssues.filter((issue) => issue.status !== 'resolved').length} open`} /></div>
+                {filtered.supportIssues.map((issue) => (
+                  <article className="review-card" key={issue.id}>
+                    <div className="review-card-heading"><div><h3>Order #{issue.order_id.slice(0, 8).toUpperCase()}</h3><p>{issue.issue_type.replaceAll('_', ' ')} · {issue.buyer_name || `Buyer ${issue.buyer_id.slice(0, 8).toUpperCase()}`} · {new Date(issue.created_at).toLocaleString()}</p></div><Status value={issue.status} /></div>
+                    <p className="review-detail">{issue.description}</p>
+                    <label className="support-field">Reply to buyer<textarea maxLength={1000} value={supportIssueNotes[issue.id] ?? issue.admin_note} onChange={(event) => setSupportIssueNotes((current) => ({ ...current, [issue.id]: event.target.value }))} placeholder="Write an update the buyer can see in the app" /></label>
+                    <div className="review-actions">
+                      {(['open', 'in_review', 'resolved'] as const).map((status) => (
+                        <button className={`button ${status === 'resolved' ? 'button-success' : 'button-outline'}`} key={status} disabled={busyId === issue.id} onClick={() => void updateSupportIssue(issue, status)}>{busyId === issue.id ? 'Saving…' : `Save as ${status.replaceAll('_', ' ')}`}</button>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+                {filtered.supportIssues.length === 0 ? <Empty>{supportIssues.length === 0 ? 'No buyer issue reports have been submitted.' : 'No reports match your search.'}</Empty> : null}
+              </section>
+              <section className="panel">
+                <div className="section-heading"><div><h2>Cancellation requests</h2><p>Review and respond to customer cancellation requests.</p></div><Status value={`${cancellationRequests.filter((request) => request.status === 'pending').length} pending`} /></div>
+                {filtered.cancellations.map((request) => (
+                  <article className="review-card" key={request.id}>
+                    <div className="review-card-heading"><div><h3>Order #{request.order_id.slice(0, 8).toUpperCase()}</h3><p>{request.buyer_name || `Buyer ${request.buyer_id.slice(0, 8).toUpperCase()}`} · {new Date(request.created_at).toLocaleString()}</p></div><Status value={request.status} /></div>
+                    <p className="review-detail">{request.reason}</p>
+                    {request.status === 'pending' ? (
+                      <>
+                        <label className="support-field">Note for buyer<textarea maxLength={1000} value={cancellationNotes[request.id] ?? request.admin_note} onChange={(event) => setCancellationNotes((current) => ({ ...current, [request.id]: event.target.value }))} placeholder="Explain your decision" /></label>
+                        <div className="review-actions">
+                          <button className="button button-outline" disabled={busyId === request.id} onClick={() => void reviewCancellation(request, false)}>Decline</button>
+                          <button className="button button-success" disabled={busyId === request.id} onClick={() => void reviewCancellation(request, true)}>{busyId === request.id ? 'Saving…' : 'Approve cancellation'}</button>
+                        </div>
+                      </>
+                    ) : request.admin_note ? <p className="review-detail"><b>Response:</b> {request.admin_note}</p> : null}
+                  </article>
+                ))}
+                {filtered.cancellations.length === 0 ? <Empty>{cancellationRequests.length === 0 ? 'No cancellation requests have been submitted.' : 'No requests match your search.'}</Empty> : null}
+              </section>
+              <section className="panel">
+                <div className="section-heading"><div><h2>Manual refunds</h2><p>Update refund cases after processing them through the payment provider.</p></div><Status value={`${refundRequests.filter((refund) => ['pending_manual', 'processing'].includes(refund.status)).length} open`} /></div>
+                <p className="finance-warning">Complete the refund with the payment provider before selecting “refunded”. Enter the provider reference so the customer and support team can verify it.</p>
+                {filtered.refunds.map((refund) => {
+                  const draft = refundDrafts[refund.id] || {
+                    status: refund.status === 'pending_manual' ? 'processing' : refund.status,
+                    reference: refund.provider_reference || '',
+                    note: refund.admin_note || '',
+                  };
+                  return (
+                    <article className="review-card" key={refund.id}>
+                      <div className="review-card-heading"><div><h3>Order #{refund.order_id.slice(0, 8).toUpperCase()} · {money(Number(refund.amount))}</h3><p>{refund.buyer_name || `Buyer ${refund.buyer_id.slice(0, 8).toUpperCase()}`} · {new Date(refund.created_at).toLocaleString()}</p></div><Status value={refund.status.replaceAll('_', ' ')} /></div>
+                      {['pending_manual', 'processing'].includes(refund.status) ? (
+                        <>
+                          <label className="support-field">Refund status<select value={draft.status} onChange={(event) => setRefundDrafts((current) => ({ ...current, [refund.id]: { ...draft, status: event.target.value } }))}><option value="processing">Processing</option><option value="refunded">Refunded</option><option value="rejected">Rejected</option></select></label>
+                          <label className="support-field">Provider reference<input value={draft.reference} onChange={(event) => setRefundDrafts((current) => ({ ...current, [refund.id]: { ...draft, reference: event.target.value } }))} placeholder="Required when marking refunded" /></label>
+                          <label className="support-field">Note for buyer<textarea maxLength={1000} value={draft.note} onChange={(event) => setRefundDrafts((current) => ({ ...current, [refund.id]: { ...draft, note: event.target.value } }))} placeholder="Explain the refund update" /></label>
+                          <div className="review-actions"><button className="button button-primary" disabled={busyId === refund.id || (draft.status === 'refunded' && !draft.reference.trim())} onClick={() => void updateRefund(refund)}>{busyId === refund.id ? 'Saving…' : 'Save refund update'}</button></div>
+                        </>
+                      ) : (
+                        <p className="review-detail">{refund.admin_note || 'No note was recorded.'}{refund.provider_reference ? ` · Reference: ${refund.provider_reference}` : ''}</p>
+                      )}
+                    </article>
+                  );
+                })}
+                {filtered.refunds.length === 0 ? <Empty>{refundRequests.length === 0 ? 'No refund cases have been submitted.' : 'No cases match your search.'}</Empty> : null}
               </section>
             </>
           ) : null}
