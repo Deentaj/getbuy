@@ -772,7 +772,7 @@ export default function AdminApp() {
                 <p className="review-detail">Handle incoming email in its existing mailbox for now. Once the mailbox provider is confirmed, it can be connected so email conversations appear alongside these cases.</p>
               </section>
               <section className="panel">
-                <div className="section-heading"><div><h2>Buyer issue reports</h2><p>Order-linked reports from customers. Replies and status changes notify the buyer in the app.</p></div><Status value={`${supportIssues.filter((issue) => issue.status !== 'resolved').length} open`} /></div>
+                <div className="section-heading"><div><h2>Buyer issue reports</h2><p>Order-linked reports from customers. Replies and status changes appear in the buyer’s order details when they reopen the order.</p></div><Status value={`${supportIssues.filter((issue) => issue.status !== 'resolved').length} open`} /></div>
                 {filtered.supportIssues.map((issue) => (
                   <article className="review-card" key={issue.id}>
                     <div className="review-card-heading"><div><h3>Order #{issue.order_id.slice(0, 8).toUpperCase()}</h3><p>{issue.issue_type.replaceAll('_', ' ')} · {issue.buyer_name || `Buyer ${issue.buyer_id.slice(0, 8).toUpperCase()}`} · {new Date(issue.created_at).toLocaleString()}</p></div><Status value={issue.status} /></div>
