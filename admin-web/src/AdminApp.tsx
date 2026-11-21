@@ -5,10 +5,10 @@ import getBuyLogo from '../../assets/getbuy-logo.svg?url';
 import getBuyLogoInverse from '../../assets/getbuy-logo-inverse.svg?url';
 import { supabase, supabaseConfigured } from './supabase';
 
-type Tab = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'support' | 'payouts';
+type Tab = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'support' | 'reports' | 'activity' | 'payouts';
 type PeopleRoleFilter = 'all' | 'buyer' | 'seller' | 'delivery';
 type RiderFilter = 'all' | 'available' | 'offline' | 'verified' | 'needs-review';
-type IconName = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'support' | 'payouts' | 'check' | 'arrow-right' | 'refresh' | 'search' | 'external';
+type IconName = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'support' | 'reports' | 'activity' | 'payouts' | 'check' | 'arrow-right' | 'refresh' | 'search' | 'external';
 type FinanceData = {
   collection_account: { bank_name: string; account_name: string; account_number: string } | null;
   payouts: Array<{
@@ -91,6 +91,39 @@ type RefundRequest = {
   admin_note: string;
   created_at: string;
 };
+type RevenueTransaction = {
+  date: string;
+  type: string;
+  order_id: string;
+  amount: number;
+  status: string;
+  description: string;
+};
+type RevenueReport = {
+  from: string;
+  to: string;
+  summary: {
+    gross_collected: number;
+    collected_orders: number;
+    refunds_paid: number;
+    refunds_pending: number;
+    net_after_refunds: number;
+    seller_paid: number;
+    rider_paid: number;
+    payouts_due: number;
+  };
+  transactions: RevenueTransaction[];
+};
+type ActivityLogEntry = {
+  id: number;
+  actor_id: string | null;
+  actor_name: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  details: Record<string, string | number | boolean | null>;
+  created_at: string;
+};
 type RiderRequest = {
   verification_id: string;
   rider_id: string;
@@ -163,8 +196,32 @@ const tabs: Array<{ id: Tab; label: string; icon: IconName }> = [
   { id: 'products', label: 'Products', icon: 'products' },
   { id: 'people', label: 'People & riders', icon: 'people' },
   { id: 'support', label: 'Support & refunds', icon: 'support' },
+  { id: 'reports', label: 'Revenue reports', icon: 'reports' },
+  { id: 'activity', label: 'Activity log', icon: 'activity' },
   { id: 'payouts', label: 'Payouts', icon: 'payouts' },
 ];
+
+function localDateInput(daysAgo = 0) {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function csvCell(value: unknown) {
+  const text = String(value ?? '');
+  const safeText = typeof value === 'string' && /^[\s]*[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${safeText.replaceAll('"', '""')}"`;
+}
+
+function downloadCsv(filename: string, rows: unknown[][]) {
+  const content = `\uFEFF${rows.map((row) => row.map(csvCell).join(',')).join('\r\n')}`;
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, ReactNode> = {
@@ -174,6 +231,8 @@ function Icon({ name }: { name: IconName }) {
     products: <><path d="m12 3 9 5v8l-9 5-9-5V8z" /><path d="m3.5 8.5 8.5 5 8.5-5M12 13.5V21M7.5 5.5l9 5" /></>,
     people: <><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 5.5a3.5 3.5 0 0 1 0 6.8M18 14a5.5 5.5 0 0 1 3.5 5.2" /></>,
     support: <><path d="M4 13v-2a8 8 0 0 1 16 0v2" /><path d="M4 13H3v4h4v-5H4zM20 13h1v4h-4v-5h3zM17 20c-1 1-2.5 1-5 1" /></>,
+    reports: <><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></>,
+    activity: <><path d="M3 12h4l3-8 4 16 3-8h4" /></>,
     payouts: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18M7 15h4" /><circle cx="16.5" cy="14.5" r="1.5" /></>,
     check: <path d="m5 12 4 4L19 6" />,
     'arrow-right': <><path d="M5 12h14M13 6l6 6-6 6" /></>,
@@ -223,6 +282,8 @@ export default function AdminApp() {
   const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('overview');
   const [search, setSearch] = useState('');
+  const [reportFrom, setReportFrom] = useState(() => localDateInput(29));
+  const [reportTo, setReportTo] = useState(() => localDateInput());
   const [peopleRoleFilter, setPeopleRoleFilter] = useState<PeopleRoleFilter>('all');
   const [riderFilter, setRiderFilter] = useState<RiderFilter>('all');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -234,6 +295,8 @@ export default function AdminApp() {
   const [supportIssues, setSupportIssues] = useState<SupportIssue[]>([]);
   const [cancellationRequests, setCancellationRequests] = useState<CancellationRequest[]>([]);
   const [refundRequests, setRefundRequests] = useState<RefundRequest[]>([]);
+  const [revenueReport, setRevenueReport] = useState<RevenueReport | null>(null);
+  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
   const [supportIssueNotes, setSupportIssueNotes] = useState<Record<string, string>>({});
   const [cancellationNotes, setCancellationNotes] = useState<Record<string, string>>({});
   const [refundDrafts, setRefundDrafts] = useState<Record<string, { status: string; reference: string; note: string }>>({});
@@ -307,6 +370,8 @@ export default function AdminApp() {
         { data: issueData, error: issueError },
         { data: cancellationData, error: cancellationError },
         { data: refundData, error: refundError },
+        { data: revenueData, error: revenueError },
+        { data: activityData, error: activityError },
       ] = await Promise.all([
         supabase.rpc('get_admin_dashboard_snapshot'),
         supabase.rpc('get_store_verification_queue'),
@@ -322,6 +387,8 @@ export default function AdminApp() {
         supabase.from('order_refunds')
           .select('id, order_id, buyer_id, amount, status, provider_reference, admin_note, created_at')
           .order('created_at', { ascending: false }).limit(100),
+        supabase.rpc('get_admin_revenue_report', { p_from: reportFrom, p_to: reportTo }),
+        supabase.rpc('get_admin_activity_log', { p_limit: 100 }),
       ]);
       if (snapshotError) throw snapshotError;
       if (storeError) throw storeError;
@@ -331,8 +398,11 @@ export default function AdminApp() {
       if (issueError) throw issueError;
       if (cancellationError) throw cancellationError;
       if (refundError) throw refundError;
+      if (revenueError) throw revenueError;
+      if (activityError) throw activityError;
       if (!snapshotData || typeof snapshotData !== 'object') throw new Error('Admin dashboard returned an invalid response.');
       if (!financeData || typeof financeData !== 'object') throw new Error('Admin finance dashboard returned an invalid response.');
+      if (!revenueData || typeof revenueData !== 'object' || Array.isArray(revenueData)) throw new Error('Revenue report returned an invalid response.');
 
       const relatedBuyerIds = [...new Set([
         ...((issueData || []) as SupportIssue[]).map((row) => row.buyer_id),
@@ -376,6 +446,8 @@ export default function AdminApp() {
       setSupportIssues(((issueData || []) as SupportIssue[]).map((row) => ({ ...row, buyer_name: buyerNames.get(row.buyer_id) || '' })));
       setCancellationRequests(((cancellationData || []) as CancellationRequest[]).map((row) => ({ ...row, buyer_name: buyerNames.get(row.buyer_id) || '' })));
       setRefundRequests(((refundData || []) as RefundRequest[]).map((row) => ({ ...row, buyer_name: buyerNames.get(row.buyer_id) || '' })));
+      setRevenueReport(revenueData as RevenueReport);
+      setActivityLog((activityData || []) as ActivityLogEntry[]);
       const collectionAccount = (financeData as FinanceData).collection_account;
       setCollectionBankName(collectionAccount?.bank_name || '');
       setCollectionAccountName(collectionAccount?.account_name || '');
@@ -385,7 +457,7 @@ export default function AdminApp() {
     } finally {
       setLoading(false);
     }
-  }, [authorized]);
+  }, [authorized, reportFrom, reportTo]);
 
   useEffect(() => {
     void loadDashboard();
@@ -597,7 +669,7 @@ export default function AdminApp() {
   };
 
   const filtered = useMemo(() => {
-    if (!snapshot) return { orders: [], stores: [], products: [], users: [], payouts: [], supportIssues: [], cancellations: [], refunds: [] };
+    if (!snapshot) return { orders: [], stores: [], products: [], users: [], payouts: [], supportIssues: [], cancellations: [], refunds: [], transactions: [] };
     const query = search.trim().toLowerCase();
     return {
       orders: snapshot.orders.filter((row) => `${row.id} ${row.status} ${row.buyer_name} ${row.delivery_address}`.toLowerCase().includes(query)),
@@ -608,8 +680,9 @@ export default function AdminApp() {
       supportIssues: supportIssues.filter((row) => `${row.order_id} ${row.buyer_id} ${row.buyer_name || ''} ${row.issue_type} ${row.description} ${row.status}`.toLowerCase().includes(query)),
       cancellations: cancellationRequests.filter((row) => `${row.order_id} ${row.buyer_id} ${row.buyer_name || ''} ${row.reason} ${row.status}`.toLowerCase().includes(query)),
       refunds: refundRequests.filter((row) => `${row.order_id} ${row.buyer_id} ${row.buyer_name || ''} ${row.status} ${row.provider_reference || ''}`.toLowerCase().includes(query)),
+      transactions: (revenueReport?.transactions || []).filter((row) => `${row.order_id} ${row.type} ${row.status} ${row.description}`.toLowerCase().includes(query)),
     };
-  }, [cancellationRequests, finance.payouts, refundRequests, search, snapshot, supportIssues]);
+  }, [cancellationRequests, finance.payouts, refundRequests, revenueReport, search, snapshot, supportIssues]);
   const peopleCounts = useMemo(() => {
     const users = snapshot?.users || [];
     return {
@@ -636,6 +709,31 @@ export default function AdminApp() {
       return matchesSearch && matchesFilter;
     });
   }, [riderFilter, search, snapshot]);
+  const downloadRevenueCsv = () => {
+    if (!revenueReport) return;
+    const { summary } = revenueReport;
+    downloadCsv(`getbuy-revenue-${reportFrom}-to-${reportTo}.csv`, [
+      ['GetBuy revenue report', reportFrom, reportTo],
+      ['Metric', 'Amount or count'],
+      ['Verified gross collections', summary.gross_collected],
+      ['Collected orders', summary.collected_orders],
+      ['Refunds completed', summary.refunds_paid],
+      ['Net after completed refunds', summary.net_after_refunds],
+      ['Refunds pending', summary.refunds_pending],
+      ['Seller payouts sent', summary.seller_paid],
+      ['Rider payouts sent', summary.rider_paid],
+      ['Manual payouts due', summary.payouts_due],
+      [],
+      ['Date', 'Type', 'Order ID', 'Signed amount (NGN)', 'Status', 'Description'],
+      ...revenueReport.transactions.map((row) => [row.date, row.type, row.order_id, row.amount, row.status, row.description]),
+    ]);
+  };
+  const downloadActivityCsv = () => {
+    downloadCsv(`getbuy-admin-activity-${localDateInput()}.csv`, [
+      ['Date', 'Administrator', 'Action', 'Entity', 'Entity ID', 'Details'],
+      ...activityLog.map((row) => [row.created_at, row.actor_name, row.action, row.entity_type, row.entity_id, JSON.stringify(row.details)]),
+    ]);
+  };
 
   if (!supabaseConfigured) {
     return <Login error="Supabase is not configured. Add the public Supabase URL and anon key to the root .env.local file." />;
@@ -696,7 +794,7 @@ export default function AdminApp() {
             </>
           ) : null}
 
-          {tab !== 'overview' ? <div className="search-bar"><Icon name="search" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`Search ${tab === 'people' ? 'people and riders' : tab === 'support' ? 'support cases and refunds' : tab}…`} /></div> : null}
+          {tab !== 'overview' && tab !== 'reports' ? <div className="search-bar"><Icon name="search" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`Search ${tab === 'people' ? 'people and riders' : tab === 'support' ? 'support cases and refunds' : tab === 'activity' ? 'activity history' : tab}…`} /></div> : null}
 
           {tab === 'orders' && snapshot ? <section className="panel"><div className="section-heading"><div><h2>Orders</h2><p>Showing latest {filtered.orders.length} orders</p></div></div><OrderTable rows={filtered.orders} /></section> : null}
 
@@ -835,6 +933,45 @@ export default function AdminApp() {
               </section>
             </>
           ) : null}
+          {tab === 'reports' && revenueReport ? (
+            <>
+              <section className="panel">
+                <div className="section-heading">
+                  <div><h2>Verified revenue and payouts</h2><p>Collections exclude simulated payments and cash orders without a confirmed rider remittance. This is not GetBuy profit; platform commission is not currently configured.</p></div>
+                  <button className="button button-primary" onClick={downloadRevenueCsv}>Download CSV</button>
+                </div>
+                <div className="report-period">
+                  <label>From<input type="date" value={reportFrom} max={reportTo} onChange={(event) => setReportFrom(event.target.value)} /></label>
+                  <label>To<input type="date" value={reportTo} min={reportFrom} max={localDateInput()} onChange={(event) => setReportTo(event.target.value)} /></label>
+                  <span>{reportFrom} through {reportTo}</span>
+                </div>
+                <div className="metric-grid report-metrics">
+                  <MoneyMetricCard label="Verified collections" value={revenueReport.summary.gross_collected} />
+                  <MoneyMetricCard label="Completed refunds" value={revenueReport.summary.refunds_paid} />
+                  <MoneyMetricCard label="Net after refunds" value={revenueReport.summary.net_after_refunds} />
+                  <MoneyMetricCard label="Refunds pending" value={revenueReport.summary.refunds_pending} />
+                  <MoneyMetricCard label="Seller payouts sent" value={revenueReport.summary.seller_paid} />
+                  <MoneyMetricCard label="Rider payouts sent" value={revenueReport.summary.rider_paid} />
+                  <MoneyMetricCard label="Manual payouts due" value={revenueReport.summary.payouts_due} />
+                  <MetricCard label="Verified orders" value={revenueReport.summary.collected_orders} icon="orders" accent="blue" />
+                </div>
+              </section>
+              <section className="panel">
+                <div className="section-heading"><div><h2>Transactions</h2><p>Collections are positive; refunds and payouts are negative. Showing {filtered.transactions.length} records for the selected period.</p></div></div>
+                <div className="table-wrap"><table><thead><tr><th>DATE</th><th>TYPE</th><th>ORDER</th><th>AMOUNT</th><th>STATUS</th><th>DESCRIPTION</th></tr></thead><tbody>
+                  {filtered.transactions.map((row, index) => <tr key={`${row.type}-${row.order_id}-${row.date}-${index}`}><td>{new Date(row.date).toLocaleString()}</td><td>{row.type.replaceAll('_', ' ')}</td><td>#{row.order_id.slice(0, 8).toUpperCase()}</td><td><b>{money(Number(row.amount))}</b></td><td><Status value={row.status.replaceAll('_', ' ')} /></td><td>{row.description.replaceAll('_', ' ')}</td></tr>)}
+                </tbody></table>{filtered.transactions.length === 0 ? <Empty>No transactions match this date range and search.</Empty> : null}</div>
+              </section>
+            </>
+          ) : null}
+          {tab === 'activity' ? (
+            <section className="panel">
+              <div className="section-heading"><div><h2>Administrator activity</h2><p>Recent administrative changes, including verification, order support, refunds, and payouts. Latest {activityLog.length} events.</p></div><button className="button button-primary" disabled={activityLog.length === 0} onClick={downloadActivityCsv}>Download CSV</button></div>
+              <div className="table-wrap"><table><thead><tr><th>DATE</th><th>ADMINISTRATOR</th><th>ACTION</th><th>AREA</th><th>RECORD</th><th>CHANGE</th></tr></thead><tbody>
+                {activityLog.filter((row) => `${row.actor_name} ${row.action} ${row.entity_type} ${row.entity_id} ${JSON.stringify(row.details)}`.toLowerCase().includes(search.toLowerCase())).map((row) => <tr key={row.id}><td>{new Date(row.created_at).toLocaleString()}</td><td>{row.actor_name}</td><td>{row.action}</td><td>{row.entity_type.replaceAll('_', ' ')}</td><td><code>{row.entity_id.slice(0, 12)}</code></td><td>{Object.entries(row.details).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${String(value)}`).join(' · ') || '—'}</td></tr>)}
+              </tbody></table>{activityLog.length === 0 ? <Empty>No administrator actions have been recorded yet.</Empty> : null}</div>
+            </section>
+          ) : null}
           {tab === 'payouts' ? (
             <>
               <section className="panel">
@@ -932,6 +1069,10 @@ function Login({
 
 function MetricCard({ label, value, icon, accent }: { label: string; value: number; icon: IconName; accent: string }) {
   return <article className="metric-card"><span className={`metric-icon ${accent}`}><Icon name={icon} /></span><span className="metric-label">{label}</span><b className="metric-value">{value.toLocaleString()}</b><span className="metric-caption">Marketplace total</span></article>;
+}
+
+function MoneyMetricCard({ label, value }: { label: string; value: number }) {
+  return <article className="metric-card money-metric-card"><span className="metric-icon green">₦</span><span className="metric-label">{label}</span><b className="metric-value">{money(Number(value))}</b><span className="metric-caption">Selected reporting period</span></article>;
 }
 
 function Document({ label, url }: { label: string; url: string }) {
