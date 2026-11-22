@@ -298,6 +298,7 @@ export default function AdminApp() {
   const [revenueReport, setRevenueReport] = useState<RevenueReport | null>(null);
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
   const [supportIssueNotes, setSupportIssueNotes] = useState<Record<string, string>>({});
+  const [supportNotice, setSupportNotice] = useState('');
   const [cancellationNotes, setCancellationNotes] = useState<Record<string, string>>({});
   const [refundDrafts, setRefundDrafts] = useState<Record<string, { status: string; reference: string; note: string }>>({});
   const [transferReferences, setTransferReferences] = useState<Record<string, string>>({});
@@ -609,16 +610,27 @@ export default function AdminApp() {
   };
 
   const updateSupportIssue = async (issue: SupportIssue, status: 'open' | 'in_review' | 'resolved') => {
+    const adminNote = supportIssueNotes[issue.id] ?? issue.admin_note;
     setBusyId(issue.id);
     setError('');
+    setSupportNotice('');
     try {
       const { error: updateError } = await supabase.rpc('update_order_issue', {
         p_issue_id: issue.id,
         p_status: status,
-        p_admin_note: supportIssueNotes[issue.id] ?? issue.admin_note,
+        p_admin_note: adminNote,
       });
       if (updateError) throw updateError;
-      await loadDashboard();
+      setSupportIssues((current) => current.map((entry) => entry.id === issue.id
+        ? { ...entry, status, admin_note: adminNote }
+        : entry));
+      setSupportIssueNotes((current) => {
+        const next = { ...current };
+        delete next[issue.id];
+        return next;
+      });
+      setSupportNotice('Buyer issue report saved. The buyer will see this update in their order details.');
+      void loadDashboard();
     } catch (updateError: unknown) {
       setError(messageOf(updateError));
     } finally {
@@ -871,6 +883,7 @@ export default function AdminApp() {
               </section>
               <section className="panel">
                 <div className="section-heading"><div><h2>Buyer issue reports</h2><p>Order-linked reports from customers. Replies and status changes appear in the buyer’s order details when they reopen the order.</p></div><Status value={`${supportIssues.filter((issue) => issue.status !== 'resolved').length} open`} /></div>
+                {supportNotice ? <div className="success-notice" role="status">{supportNotice}</div> : null}
                 {filtered.supportIssues.map((issue) => (
                   <article className="review-card" key={issue.id}>
                     <div className="review-card-heading"><div><h3>Order #{issue.order_id.slice(0, 8).toUpperCase()}</h3><p>{issue.issue_type.replaceAll('_', ' ')} · {issue.buyer_name || `Buyer ${issue.buyer_id.slice(0, 8).toUpperCase()}`} · {new Date(issue.created_at).toLocaleString()}</p></div><Status value={issue.status} /></div>
