@@ -9368,6 +9368,11 @@ function Shell({ children, footer, toast }: { children: React.ReactNode; footer?
           >
             {children}
           </ScrollView>
+          {Platform.OS === 'web' ? (
+            <Text accessibilityRole="contentinfo" style={styles.ownershipFooter}>
+              GETBUY POWERED BY STRATOS LIMITED.
+            </Text>
+          ) : null}
           {toast ? (
             <View accessibilityLiveRegion="polite" pointerEvents="none" style={styles.toast}>
               <Text style={styles.toastText}>{toast}</Text>
@@ -9591,6 +9596,7 @@ const styles = StyleSheet.create({
   radioSelected: { borderColor: '#143A73' },
   radioDot: { backgroundColor: '#143A73', borderRadius: 5, height: 10, width: 10 },
   footer: { marginTop: 20 },
+  ownershipFooter: { backgroundColor: '#FFFFFF', borderTopColor: '#D6E4F2', borderTopWidth: StyleSheet.hairlineWidth, color: '#71839A', fontSize: 10, fontWeight: '700', letterSpacing: 0.8, paddingHorizontal: 12, paddingVertical: 8, textAlign: 'center' },
   primaryButton: { alignItems: 'center', backgroundColor: '#0F3D6E', borderRadius: 18, flexDirection: 'row', height: 62, justifyContent: 'center', marginTop: 18 },
   disabledButton: { backgroundColor: '#A8C4E2' },
   pressedButton: { opacity: 0.8 },

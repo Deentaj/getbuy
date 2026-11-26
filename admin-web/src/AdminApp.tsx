@@ -1034,7 +1034,7 @@ export default function AdminApp() {
               </section>
             </>
           ) : null}
-          <footer className="footer-note">GetBuy Admin · Secure marketplace operations</footer>
+          <footer className="footer-note">GETBUY POWERED BY STRATOS LIMITED. · Secure marketplace operations</footer>
         </div>
       </main>
     </div>
@@ -1074,7 +1074,7 @@ function Login({
             <button className="button button-primary login-submit" disabled={loading}>{loading ? 'Signing in…' : 'Sign in securely'}</button>
           </form>
         ) : null}
-        <p className="login-footnote">Access is limited to accounts granted the administrator role.</p>
+        <p className="login-footnote">GETBUY POWERED BY STRATOS LIMITED.<br />Access is limited to accounts granted the administrator role.</p>
       </section>
     </main>
   );

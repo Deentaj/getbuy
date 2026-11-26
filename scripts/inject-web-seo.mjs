@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 const indexPath = resolve('dist', 'index.html');
 const html = await readFile(indexPath, 'utf8');
 const metadata = `    <meta name="description" content="Shop groceries, fresh produce, packaged foods and local market products from nearby sellers in Nigeria." />
+    <meta name="author" content="STRATOS LIMITED" />
     <meta name="robots" content="index, follow" />
     <link rel="canonical" href="https://getbuy.com.ng/" />
     <meta property="og:type" content="website" />
