@@ -29,3 +29,6 @@ verify_jwt = true
 
 [functions.support-chat-faq]
 verify_jwt = true
+
+[functions.verify-nin]
+verify_jwt = true

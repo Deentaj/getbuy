@@ -240,6 +240,7 @@ type Screen =
   | 'create'
   | 'signin'
   | 'verifySignup'
+  | 'ninVerification'
   | 'forgotPassword'
   | 'verifyRecovery'
   | 'newPassword'
@@ -329,6 +330,7 @@ const screensWithoutNavigation: Screen[] = [
   'create',
   'signin',
   'verifySignup',
+  'ninVerification',
   'forgotPassword',
   'verifyRecovery',
   'newPassword',
@@ -1152,6 +1154,8 @@ function AppContent() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [signupPhone, setSignupPhone] = useState('');
+  const [ninNumber, setNinNumber] = useState('');
+  const [ninConsent, setNinConsent] = useState(false);
   const [signupCode, setSignupCode] = useState('');
   const [signupNotice, setSignupNotice] = useState('');
   const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
@@ -1329,6 +1333,8 @@ function AppContent() {
   const [authError, setAuthError] = useState('');
   const passwordShake = useRef(new Animated.Value(0)).current;
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
+  const [isSubmittingNin, setIsSubmittingNin] = useState(false);
+  const [pendingNinNextScreen, setPendingNinNextScreen] = useState<Screen>('sellerDashboard');
   const [isSavingStore, setIsSavingStore] = useState(false);
   const [sellerStoreId, setSellerStoreId] = useState<string | null>(null);
   const [storeVerificationStatus, setStoreVerificationStatus] = useState<'unverified' | 'pending' | 'verified' | 'rejected'>('unverified');
@@ -1402,6 +1408,82 @@ function AppContent() {
         console.error('Unable to remember the sign-in email.', error);
         setAuthError('Unable to save your sign-in preference on this device.');
       }
+    }
+  };
+
+  const routeAuthenticatedAccount = async (userId: string, authenticatedRole: Role, nextScreen: Screen) => {
+    if (authenticatedRole !== 'seller' && authenticatedRole !== 'delivery' && authenticatedRole !== 'buyer') {
+      setScreen(nextScreen);
+      return;
+    }
+    const { data: verification, error } = await supabase
+      .from('nin_verifications')
+      .select('status, requested_role')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) {
+      if (error.code === '42P01' && authenticatedRole === 'buyer') {
+        setScreen(nextScreen);
+        return;
+      }
+      throw error;
+    }
+    const requestedRole = verification?.requested_role === 'seller' || verification?.requested_role === 'delivery'
+      ? verification.requested_role
+      : null;
+    const requiresNin = requestedRole
+      ? verification?.status !== 'verified'
+      : (authenticatedRole === 'seller' || authenticatedRole === 'delivery') && verification?.status !== 'verified';
+    if (requiresNin) {
+      const verificationRole = requestedRole || authenticatedRole as 'seller' | 'delivery';
+      setRole(verificationRole);
+      setPendingNinNextScreen(
+        nextScreen === 'sellerSetup' || nextScreen === 'deliverySetup'
+          ? nextScreen
+          : verificationRole === 'seller' ? 'sellerDashboard' : 'deliveryDashboard',
+      );
+      setNinNumber('');
+      setNinConsent(false);
+      setAuthError('');
+      setScreen('ninVerification');
+      return;
+    }
+    setScreen(nextScreen);
+  };
+
+  const verifyNinIdentity = async (nin: string) => {
+    const normalizedNin = nin.replace(/\D/g, '');
+    if (!/^\d{11}$/.test(normalizedNin)) {
+      throw new Error('Enter your 11-digit NIN.');
+    }
+    const { data, error } = await supabase.functions.invoke<{ verified?: boolean }>('verify-nin', {
+      body: { consent: true, nin: normalizedNin },
+    });
+    if (error) throw new Error('NIN verification is temporarily unavailable. Please try again.');
+    if (!data?.verified) throw new Error('Your NIN could not be verified against the name on your account.');
+  };
+
+  const submitNinVerification = async () => {
+    setAuthError('');
+    if (!currentUserId || (role !== 'seller' && role !== 'delivery')) {
+      setAuthError('Sign in with a seller or rider account to verify your NIN.');
+      return;
+    }
+    if (!ninConsent) {
+      setAuthError('Consent is required to send your NIN for verification.');
+      return;
+    }
+
+    setIsSubmittingNin(true);
+    try {
+      await verifyNinIdentity(ninNumber);
+      setNinNumber('');
+      setNinConsent(false);
+      setScreen(pendingNinNextScreen);
+    } catch (error: unknown) {
+      setAuthError(getErrorMessage(error, 'NIN verification is temporarily unavailable. Please try again.'));
+    } finally {
+      setIsSubmittingNin(false);
     }
   };
 
@@ -1554,7 +1636,11 @@ function AppContent() {
           setScreen('adminSetup');
         } else {
           setCurrentUserId(sessionUser.id);
-          setScreen(restoredRole === 'buyer' ? 'dashboard' : restoredRole === 'seller' ? 'sellerDashboard' : 'deliveryDashboard');
+          await routeAuthenticatedAccount(
+            sessionUser.id,
+            restoredRole,
+            restoredRole === 'buyer' ? 'dashboard' : restoredRole === 'seller' ? 'sellerDashboard' : 'deliveryDashboard',
+          );
         }
       }
     }).catch((error: unknown) => {
@@ -2015,12 +2101,35 @@ function AppContent() {
         pendingOAuthRole.current = null;
         setRole(confirmedRole);
         setIsGuestBrowsing(false);
+        const oauthSignupNextScreen = confirmedRole === 'seller'
+          ? 'sellerSetup'
+          : confirmedRole === 'delivery'
+            ? 'deliverySetup'
+            : 'location';
+        if (oauthIntent?.isSignup && (confirmedRole === 'seller' || confirmedRole === 'delivery')) {
+          setPendingNinNextScreen(oauthSignupNextScreen);
+          setScreen('ninVerification');
+          try {
+            await verifyNinIdentity(ninNumber);
+            setNinNumber('');
+            setNinConsent(false);
+          } catch (error: unknown) {
+            setAuthError(getErrorMessage(error, 'NIN verification is temporarily unavailable. Please try again.'));
+            return;
+          }
+        }
         if (checkoutAfterAuth.current && confirmedRole === 'buyer') {
           checkoutAfterAuth.current = false;
-          setScreen('checkout');
+          await routeAuthenticatedAccount(authUserId, confirmedRole, 'checkout');
         } else {
           checkoutAfterAuth.current = false;
-          setScreen(confirmedRole === 'seller' ? 'sellerDashboard' : confirmedRole === 'delivery' ? 'deliveryDashboard' : 'dashboard');
+          await routeAuthenticatedAccount(
+            authUserId,
+            confirmedRole,
+            oauthIntent?.isSignup
+              ? oauthSignupNextScreen
+              : confirmedRole === 'seller' ? 'sellerDashboard' : confirmedRole === 'delivery' ? 'deliveryDashboard' : 'dashboard',
+          );
         }
       } catch (error: unknown) {
         processedAuthUrls.current.delete(url);
@@ -3213,6 +3322,8 @@ function AppContent() {
     setProfilePhotoPath(null);
     setProfilePhotoVersion(0);
     setEmail('');
+    setNinNumber('');
+    setNinConsent(false);
     setLocation('');
     setArea('');
     setDirections('');
@@ -3997,6 +4108,14 @@ function AppContent() {
       setAuthError('Enter a valid phone number with at least 10 digits.');
       return;
     }
+    if ((role === 'seller' || role === 'delivery') && !/^\d{11}$/.test(ninNumber.replace(/\D/g, ''))) {
+      setAuthError('Enter your 11-digit NIN to create a seller or rider account.');
+      return;
+    }
+    if ((role === 'seller' || role === 'delivery') && !ninConsent) {
+      setAuthError('Consent is required for seller and rider NIN verification.');
+      return;
+    }
     setIsSubmittingAuth(true);
     try {
       const { data, error } = await supabase.auth.signUp({
@@ -4026,11 +4145,21 @@ function AppContent() {
       await rememberRegisteredAccount();
       setCurrentUserId(data.session.user.id);
       setIsGuestBrowsing(false);
-      if (checkoutAfterAuth.current && role === 'buyer') {
+      const createdRole = role || 'buyer';
+      setRole(createdRole);
+      if (checkoutAfterAuth.current && createdRole === 'buyer') {
         checkoutAfterAuth.current = false;
-        setScreen('checkout');
+        await routeAuthenticatedAccount(data.session.user.id, createdRole, 'checkout');
       } else {
-        setScreen(role === 'seller' ? 'sellerSetup' : role === 'delivery' ? 'deliverySetup' : 'location');
+        const nextScreen = createdRole === 'seller' ? 'sellerSetup' : createdRole === 'delivery' ? 'deliverySetup' : 'location';
+        if (createdRole === 'seller' || createdRole === 'delivery') {
+          setPendingNinNextScreen(nextScreen);
+          setScreen('ninVerification');
+          await verifyNinIdentity(ninNumber);
+          setNinNumber('');
+          setNinConsent(false);
+        }
+        await routeAuthenticatedAccount(data.session.user.id, createdRole, nextScreen);
       }
     } catch (error: unknown) {
       setAuthError(getErrorMessage(error, 'Unable to create your account.'));
@@ -4065,11 +4194,21 @@ function AppContent() {
       setIsGuestBrowsing(false);
       setSignupCode('');
       setSignupNotice('');
-      if (checkoutAfterAuth.current && role === 'buyer') {
+      const createdRole = role || 'buyer';
+      setRole(createdRole);
+      if (checkoutAfterAuth.current && createdRole === 'buyer') {
         checkoutAfterAuth.current = false;
-        setScreen('checkout');
+        await routeAuthenticatedAccount(data.session.user.id, createdRole, 'checkout');
       } else {
-        setScreen(role === 'seller' ? 'sellerSetup' : role === 'delivery' ? 'deliverySetup' : 'location');
+        const nextScreen = createdRole === 'seller' ? 'sellerSetup' : createdRole === 'delivery' ? 'deliverySetup' : 'location';
+        if (createdRole === 'seller' || createdRole === 'delivery') {
+          setPendingNinNextScreen(nextScreen);
+          setScreen('ninVerification');
+          await verifyNinIdentity(ninNumber);
+          setNinNumber('');
+          setNinConsent(false);
+        }
+        await routeAuthenticatedAccount(data.session.user.id, createdRole, nextScreen);
       }
     } catch (error: unknown) {
       setAuthError(getErrorMessage(error, 'That verification code is invalid or expired.'));
@@ -4170,10 +4309,14 @@ function AppContent() {
       setIsGuestBrowsing(false);
       if (checkoutAfterAuth.current && signedInRole === 'buyer') {
         checkoutAfterAuth.current = false;
-        setScreen('checkout');
+        await routeAuthenticatedAccount(signedInUser.id, signedInRole, 'checkout');
       } else {
         checkoutAfterAuth.current = false;
-        setScreen(signedInRole === 'seller' ? 'sellerDashboard' : signedInRole === 'delivery' ? 'deliveryDashboard' : 'dashboard');
+        await routeAuthenticatedAccount(
+          signedInUser.id,
+          signedInRole,
+          signedInRole === 'seller' ? 'sellerDashboard' : signedInRole === 'delivery' ? 'deliveryDashboard' : 'dashboard',
+        );
       }
     } catch (error: unknown) {
       const message = getErrorMessage(error, 'Unable to sign in.');
@@ -4213,6 +4356,14 @@ function AppContent() {
     }
     if (screen === 'create' && (role === 'buyer' || role === 'seller' || role === 'delivery') && signupPhone.replace(/\D/g, '').length < 10) {
       setAuthError('Enter a valid phone number before continuing with social sign-up.');
+      return;
+    }
+    if (screen === 'create' && (role === 'seller' || role === 'delivery') && !/^\d{11}$/.test(ninNumber.replace(/\D/g, ''))) {
+      setAuthError('Enter your 11-digit NIN before continuing with social sign-up.');
+      return;
+    }
+    if (screen === 'create' && (role === 'seller' || role === 'delivery') && !ninConsent) {
+      setAuthError('Consent is required for seller and rider NIN verification.');
       return;
     }
     setIsSubmittingAuth(true);
@@ -5699,6 +5850,8 @@ function AppContent() {
 
   const beginAccountCreation = () => {
     setHasAcceptedTerms(false);
+    setNinNumber('');
+    setNinConsent(false);
     setAuthError('');
     setScreen('create');
   };
@@ -7345,6 +7498,33 @@ function AppContent() {
           keyboardType="phone-pad"
         />
         <Text style={styles.formHint}>We’ll use this number for order and account contact. Email verification is required to activate your account.</Text>
+        {role === 'seller' || role === 'delivery' ? (
+          <>
+            <Field
+              label="National Identification Number (NIN)"
+              value={ninNumber}
+              onChangeText={(value) => setNinNumber(value.replace(/\D/g, '').slice(0, 11))}
+              placeholder="Enter your 11-digit NIN"
+              keyboardType="numeric"
+              secureTextEntry
+            />
+            <Text style={styles.formHint}>
+              Required for {role === 'delivery' ? 'rider' : 'seller'} signup. GetBuy sends your NIN to Dojah for verification against your account name and does not store your NIN or the returned identity record.
+            </Text>
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: ninConsent }}
+              disabled={isSubmittingAuth}
+              onPress={() => setNinConsent((accepted) => !accepted)}
+              style={styles.termsAgreementRow}
+            >
+              <View style={[styles.rememberLoginCheckbox, ninConsent && styles.rememberLoginCheckboxSelected]}>
+                {ninConsent ? <Ionicons color="#FFF" name="checkmark" size={14} /> : null}
+              </View>
+              <Text style={styles.termsAgreementLabel}>I consent to GetBuy sending my NIN to Dojah for identity verification.</Text>
+            </Pressable>
+          </>
+        ) : null}
         <Field label="Password" value={password} onChangeText={setPassword} placeholder="••••••••••" secureTextEntry={!showPassword} />
         <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.showPassword}>
           <Ionicons color="#143A73" name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={19} style={styles.showPasswordIcon} />
@@ -7375,7 +7555,7 @@ function AppContent() {
         </Pressable>
         <PrimaryButton
           label={isSubmittingAuth ? 'Creating account...' : role === 'buyer' ? 'Create buyer account' : 'Create account'}
-          disabled={isSubmittingAuth || !hasAcceptedTerms || !firstName.trim() || !surname.trim() || password.length < 8 || !email.trim() || signupPhone.replace(/\D/g, '').length < 10 || !confirmPassword || password !== confirmPassword}
+          disabled={isSubmittingAuth || !hasAcceptedTerms || !firstName.trim() || !surname.trim() || password.length < 8 || !email.trim() || signupPhone.replace(/\D/g, '').length < 10 || ((role === 'seller' || role === 'delivery') && (!/^\d{11}$/.test(ninNumber.replace(/\D/g, '')) || !ninConsent)) || !confirmPassword || password !== confirmPassword}
           onPress={createAccount}
         />
         <View style={styles.authDivider}><View style={styles.authDividerLine} /><Text style={styles.authDividerText}>or sign up with</Text><View style={styles.authDividerLine} /></View>
@@ -7384,10 +7564,10 @@ function AppContent() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Continue with ${provider}`}
-              disabled={isSubmittingAuth || !hasAcceptedTerms}
+              disabled={isSubmittingAuth || !hasAcceptedTerms || (role === 'seller' || role === 'delivery') && (!/^\d{11}$/.test(ninNumber.replace(/\D/g, '')) || !ninConsent)}
               key={provider}
               onPress={() => signInWithProvider(provider)}
-              style={[styles.socialButton, (isSubmittingAuth || !hasAcceptedTerms) && styles.disabledButton]}
+              style={[styles.socialButton, (isSubmittingAuth || !hasAcceptedTerms || (role === 'seller' || role === 'delivery') && (!/^\d{11}$/.test(ninNumber.replace(/\D/g, '')) || !ninConsent)) && styles.disabledButton]}
             >
               <Ionicons color="#143A73" name={({ google: 'logo-google', facebook: 'logo-facebook', apple: 'logo-apple' } as const)[provider]} size={18} />
               <Text style={styles.socialButtonLabel}>{provider === 'apple' ? 'Apple' : provider === 'google' ? 'Google' : 'Facebook'}</Text>
@@ -7594,6 +7774,59 @@ function AppContent() {
     );
   }
 
+  if (screen === 'ninVerification') {
+    const accountType = role === 'delivery' ? 'rider' : 'seller';
+    return (
+      <FormShell title="" description="" onBack={() => void handleSignOut()} hideHeader>
+        <View style={styles.accountHeaderRow}>
+          <View style={styles.accountBrand}><LogoLockup green /></View>
+          <Pressable accessibilityRole="button" disabled={isSubmittingNin} onPress={() => void handleSignOut()}>
+            <Text style={styles.registeredLinkText}>Sign out</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.accountEyebrow}>{accountType.toUpperCase()} ACCOUNT · IDENTITY CHECK</Text>
+        <Text style={styles.accountTitle}>Verify your NIN</Text>
+        <Text style={styles.accountDescription}>
+          Verify your identity before continuing to your {accountType} account. Use the legal name on your GetBuy profile.
+        </Text>
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>11-digit NIN</Text>
+          <TextInput
+            accessibilityLabel="11-digit NIN"
+            keyboardType="number-pad"
+            maxLength={11}
+            onChangeText={(value) => setNinNumber(value.replace(/\D/g, '').slice(0, 11))}
+            placeholder="Enter your NIN"
+            placeholderTextColor="#8B9DB2"
+            style={styles.input}
+            value={ninNumber}
+          />
+        </View>
+        <Text style={styles.formHint}>
+          GetBuy sends your NIN to Dojah for verification against your account name. GetBuy does not store your NIN or the identity record returned by Dojah.
+        </Text>
+        <Pressable
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: ninConsent }}
+          disabled={isSubmittingNin}
+          onPress={() => setNinConsent((accepted) => !accepted)}
+          style={styles.termsAgreementRow}
+        >
+          <View style={[styles.rememberLoginCheckbox, ninConsent && styles.rememberLoginCheckboxSelected]}>
+            {ninConsent ? <Ionicons color="#FFF" name="checkmark" size={14} /> : null}
+          </View>
+          <Text style={styles.termsAgreementLabel}>I consent to GetBuy sending my NIN to Dojah for identity verification.</Text>
+        </Pressable>
+        {authError ? <Text style={styles.authError}>{authError}</Text> : null}
+        <PrimaryButton
+          label={isSubmittingNin || isSubmittingAuth ? 'Verifying NIN…' : 'Verify NIN and continue'}
+          disabled={isSubmittingNin || isSubmittingAuth || ninNumber.replace(/\D/g, '').length !== 11 || !ninConsent}
+          onPress={() => void submitNinVerification()}
+        />
+      </FormShell>
+    );
+  }
+
   if (screen === 'signin') {
     return (
       <FormShell title="" description="" onBack={goBack} hideHeader>
@@ -7604,6 +7837,9 @@ function AppContent() {
         <Text style={styles.accountEyebrow}>WELCOME BACK</Text>
         <Text style={styles.accountTitle}>{role === 'admin' ? 'Welcome back' : 'Back to fresh.'}</Text>
         <Text style={styles.accountDescription}>{role === 'admin' ? 'Sign in with the administrator account provisioned for you.' : 'Sign in to pick up where you left off.'}</Text>
+        {role === 'seller' || role === 'delivery'
+          ? <Text style={styles.formHint}>NIN verification is required before you can access your {role === 'delivery' ? 'rider' : 'seller'} account.</Text>
+          : null}
         <Field label="Email address" value={email} onChangeText={setEmail} placeholder="maya@example.com" keyboardType="email-address" />
         <Pressable
           accessibilityRole="checkbox"
@@ -8142,6 +8378,28 @@ function AppContent() {
           <Text style={styles.marketHeroTitle}>{`Fresh picks.\nRight around you.`}</Text>
           <Text style={styles.marketHeroText}>{area || location ? `Showing available products from shops in ${area || location}.` : 'Set your area to see shops and products close to you.'}</Text>
         </View>
+        <Pressable
+          accessibilityRole="button"
+          disabled={isLoadingSupportChat}
+          onPress={() => {
+            if (!currentUserId || isGuestBrowsing) {
+              setRole('buyer');
+              setIsGuestBrowsing(false);
+              setAuthError('Sign in with a buyer account to start a live chat.');
+              setScreen('signin');
+              return;
+            }
+            void openSupportChat();
+          }}
+          style={styles.supportOption}
+        >
+          <View style={styles.supportIcon}><Ionicons color="#143A73" name="chatbubbles-outline" size={19} /></View>
+          <View style={styles.productCopy}>
+            <Text style={styles.productName}>{isLoadingSupportChat ? 'Opening live chat…' : 'Chat with customer service'}</Text>
+            <Text style={styles.productStore}>Get quick help with your order or account</Text>
+          </View>
+          <Ionicons color="#143A73" name="arrow-forward" size={19} />
+        </Pressable>
 
         <View style={styles.marketFilterHeader}>
           <View style={styles.marketFilterHeadingCopy}>
