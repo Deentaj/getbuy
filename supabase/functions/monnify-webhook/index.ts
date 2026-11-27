@@ -4,6 +4,7 @@ import {
   getMonnifyOrder,
   verifyMonnifyPayment,
 } from '../_shared/monnify.ts';
+import { createServerErrorId, logServerError } from '../_shared/server-errors.ts';
 
 function respond(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -72,7 +73,8 @@ Deno.serve(async (request) => {
     const paid = await verifyMonnifyPayment(env, admin, order);
     return respond({ received: true, paid });
   } catch (error) {
-    console.error('Monnify webhook handling failed.', error);
-    return respond({ error: error instanceof Error ? error.message : 'Webhook processing failed.' }, 500);
+    const errorId = createServerErrorId();
+    logServerError(errorId, 'monnify-webhook', error);
+    return respond({ error: 'Webhook processing failed.', error_id: errorId }, 500);
   }
 });

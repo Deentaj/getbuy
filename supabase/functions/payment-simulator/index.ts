@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createServerErrorId, logServerError } from '../_shared/server-errors.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -130,7 +131,8 @@ Deno.serve(async (request) => {
 
     return respond({ error: 'A valid payment simulation action is required.' }, 400);
   } catch (error) {
-    console.error('Payment simulation request failed.', error);
-    return respond({ error: error instanceof Error ? error.message : 'Payment simulation failed.' }, 400);
+    const errorId = createServerErrorId();
+    logServerError(errorId, 'payment-simulator', error);
+    return respond({ error: 'Unable to record the test payment. Please try again.', error_id: errorId }, 500);
   }
 });

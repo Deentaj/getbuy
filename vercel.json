@@ -11,7 +11,7 @@
       "destination": "/admin-panel/index.html"
     },
     {
-      "source": "/:path((?!admin-panel).*)",
+      "source": "/:path((?!admin-panel|api/).*)",
       "destination": "/index.html"
     }
   ]

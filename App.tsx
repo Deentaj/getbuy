@@ -10,7 +10,9 @@ import { WebView } from 'react-native-webview';
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './lib/supabase';
+import { createServerReportedError, formatErrorForUser, type ClientErrorReport } from './lib/errorReporting';
 import { TERMS_LAST_UPDATED, TERMS_SECTIONS } from './legal/terms';
+import { decodeAndValidateImage } from './supabase/functions/_shared/image-validation';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Animated,
@@ -50,6 +52,14 @@ if (Platform.OS !== 'web') {
 }
 
 type Role = 'buyer' | 'seller' | 'delivery' | 'admin';
+type SupportChatMessage = {
+  id: string;
+  conversation_id: string;
+  sender_id: string | null;
+  sender_type: 'customer' | 'staff' | 'bot';
+  body: string;
+  created_at: string;
+};
 type Order = {
   id: string;
   dbId: string;
@@ -249,6 +259,7 @@ type Screen =
   | 'productDetail'
   | 'storefront'
   | 'orderChat'
+  | 'supportChat'
   | 'checkout'
   | 'orderSuccess'
   | 'tracking'
@@ -304,7 +315,7 @@ function getNavigationTabs(navigation: AppNavigationState): NavigationTab[] {
     ];
   }
   return [
-    { label: 'Home', icon: 'home-outline', destination: 'dashboard', active: ['dashboard', 'saved', 'productDetail', 'storefront', 'notifications', 'support', 'terms'].includes(screen) },
+    { label: 'Home', icon: 'home-outline', destination: 'dashboard', active: ['dashboard', 'saved', 'productDetail', 'storefront', 'notifications', 'support', 'supportChat', 'terms'].includes(screen) },
     { label: isGuestBrowsing ? 'Sign in' : 'Orders', icon: isGuestBrowsing ? 'log-in-outline' : 'receipt-outline', destination: isGuestBrowsing ? 'signin' : 'orders', active: screen === 'orders' || screen === 'tracking' || screen === 'orderChat' },
     { label: 'Cart', icon: 'cart-outline', destination: 'cart', active: screen === 'cart' || screen === 'checkout' },
     { label: isGuestBrowsing ? 'Sign up' : 'Profile', icon: 'person-outline', destination: isGuestBrowsing ? 'create' : 'profile', active: screen === 'profile' },
@@ -934,12 +945,53 @@ function RiderMap({ location }: { location: RiderLocation }) {
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message) return error.message;
-  if (typeof error === 'object' && error !== null && 'message' in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string' && message) return message;
+  return formatErrorForUser(error, fallback, 'marketplace', fallback, sendClientErrorReport);
+}
+
+async function sendClientErrorReport(report: ClientErrorReport) {
+  const { error } = await supabase.functions.invoke('log-client-error', { body: report });
+  if (error) throw error;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+async function throwFunctionError(error: unknown): Promise<never> {
+  if (isRecord(error) && error.context instanceof Response) {
+    const body: unknown = await error.context.clone().json().catch(() => null);
+    if (isRecord(body) && typeof body.error_id === 'string' && typeof body.error === 'string') {
+      throw createServerReportedError(body.error_id, body.error);
+    }
   }
-  return fallback;
+  throw error;
+}
+
+async function uploadSecureImage(input: {
+  base64: string;
+  mimeType: string | null | undefined;
+  purpose: 'profile-photo' | 'product-image' | 'verification-document' | 'delivery-proof';
+  documentType?: 'storefront' | 'seller_id' | 'plate' | 'roadworthiness' | 'driver_license';
+  orderId?: string;
+}) {
+  const image = decodeAndValidateImage(input.base64, input.mimeType);
+  const buffer = new ArrayBuffer(image.bytes.byteLength);
+  new Uint8Array(buffer).set(image.bytes);
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: image.mimeType }), `image.${image.extension}`);
+  form.append('purpose', input.purpose);
+  if (input.documentType) form.append('document_type', input.documentType);
+  if (input.orderId) form.append('order_id', input.orderId);
+
+  const { data, error } = await supabase.functions.invoke('secure-image-upload', { body: form });
+  if (error) await throwFunctionError(error);
+  if (!isRecord(data) || typeof data.path !== 'string') {
+    throw new Error('The image upload service returned an invalid response.');
+  }
+  return {
+    path: data.path,
+    publicUrl: typeof data.public_url === 'string' ? data.public_url : undefined,
+  };
 }
 
 function decodeBase64Url(value: string) {
@@ -954,11 +1006,8 @@ async function getFunctionErrorMessage(error: unknown, fallback: string) {
     const context = (error as { context?: unknown }).context;
     if (context instanceof Response) {
       const body: unknown = await context.clone().json().catch(() => null);
-      if (typeof body === 'object' && body !== null) {
-        for (const key of ['error', 'message'] as const) {
-          const detail = (body as Record<string, unknown>)[key];
-          if (typeof detail === 'string' && detail.trim()) return detail;
-        }
+      if (isRecord(body) && typeof body.error_id === 'string' && typeof body.error === 'string') {
+        return getErrorMessage(createServerReportedError(body.error_id, body.error), fallback);
       }
     }
   }
@@ -978,21 +1027,25 @@ function getDeliveryLocationError(error: unknown) {
   const errorCode = typeof error === 'object' && error !== null && 'code' in error
     ? String((error as { code?: unknown }).code || '')
     : '';
-  const message = getErrorMessage(error, '');
+  const message = error instanceof Error
+    ? error.message
+    : isRecord(error) && typeof error.message === 'string'
+      ? error.message
+      : '';
   const normalizedMessage = message.toLowerCase();
 
+  let fallback = 'Unable to publish rider location. Check location permission and your connection.';
   if (
     errorCode === '42P01'
     || errorCode === 'PGRST205'
     || normalizedMessage.includes('delivery_order_locations')
       && (normalizedMessage.includes('schema cache') || normalizedMessage.includes('does not exist'))
   ) {
-    return 'Rider tracking is not set up in Supabase yet. Apply the delivery-location migration, then restart the app.';
+    fallback = 'Rider tracking is temporarily unavailable. Please contact support.';
+  } else if (errorCode === '42501' || normalizedMessage.includes('row-level security')) {
+    fallback = 'Unable to share rider location. Confirm this rider is assigned to the active order.';
   }
-  if (errorCode === '42501' || normalizedMessage.includes('row-level security')) {
-    return 'Supabase blocked location sharing. Confirm this rider is assigned to the order and its status is out for delivery.';
-  }
-  return message || 'Unable to publish rider location. Check location permission and your connection.';
+  return getErrorMessage(error, fallback);
 }
 
 function parsePriceAmount(price: string) {
@@ -1166,6 +1219,13 @@ function AppContent() {
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState('');
+  const [supportChatId, setSupportChatId] = useState<string | null>(null);
+  const [supportChatStatus, setSupportChatStatus] = useState<'open' | 'closed'>('open');
+  const [supportChatMessages, setSupportChatMessages] = useState<SupportChatMessage[]>([]);
+  const [supportChatDraft, setSupportChatDraft] = useState('');
+  const [isLoadingSupportChat, setIsLoadingSupportChat] = useState(false);
+  const [isSendingSupportChat, setIsSendingSupportChat] = useState(false);
+  const [supportChatError, setSupportChatError] = useState('');
   const [isCallingRider, setIsCallingRider] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'bank_transfer' | 'card'>('bank_transfer');
   const [usePaymentSimulator, setUsePaymentSimulator] = useState(false);
@@ -1832,7 +1892,7 @@ function AppContent() {
             : 'Your payment is confirmed. The seller has been notified, and payment remains protected until you confirm delivery.');
           setScreen('orderSuccess');
         } catch (error: unknown) {
-          setAuthError(getErrorMessage(error, 'Payment returned, but GetBuy could not verify it yet. Check the order again before paying again.'));
+          setAuthError(await getFunctionErrorMessage(error, 'Payment returned, but GetBuy could not verify it yet. Check the order again before paying again.'));
         }
       })();
     };
@@ -2320,6 +2380,77 @@ function AppContent() {
       void supabase.removeChannel(channel);
     };
   }, [chatThreadId, isSupabaseConfigured, screen]);
+
+  useEffect(() => {
+    if (screen !== 'supportChat' || !supportChatId || !isSupabaseConfigured) return;
+    let active = true;
+    const loadSupportChat = async () => {
+      setIsLoadingSupportChat(true);
+      setSupportChatError('');
+      const [conversationResult, messagesResult] = await Promise.all([
+        supabase.from('support_chat_conversations')
+          .select('status')
+          .eq('id', supportChatId)
+          .single(),
+        supabase.from('support_chat_messages')
+          .select('id, conversation_id, sender_id, sender_type, body, created_at')
+          .eq('conversation_id', supportChatId)
+          .order('created_at', { ascending: true })
+          .limit(200),
+      ]);
+      if (conversationResult.error) throw conversationResult.error;
+      if (messagesResult.error) throw messagesResult.error;
+      if (!active) return;
+      setSupportChatStatus(conversationResult.data.status as 'open' | 'closed');
+      setSupportChatMessages((current) => {
+        const messagesById = new Map(
+          ((messagesResult.data || []) as SupportChatMessage[]).map((message) => [message.id, message]),
+        );
+        current.filter((message) => message.conversation_id === supportChatId)
+          .forEach((message) => messagesById.set(message.id, message));
+        return [...messagesById.values()].sort((first, second) =>
+          first.created_at.localeCompare(second.created_at),
+        );
+      });
+    };
+    void loadSupportChat().catch((error: unknown) => {
+      if (active) setSupportChatError(getErrorMessage(error, 'Unable to load your support chat.'));
+    }).finally(() => {
+      if (active) setIsLoadingSupportChat(false);
+    });
+
+    const channel = supabase.channel(`support-chat-customer-${supportChatId}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'support_chat_messages',
+        filter: `conversation_id=eq.${supportChatId}`,
+      }, (payload) => {
+        if (!active) return;
+        const newMessage = payload.new as SupportChatMessage;
+        setSupportChatMessages((current) => current.some((message) => message.id === newMessage.id)
+          ? current
+          : [...current, newMessage]);
+      })
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'support_chat_conversations',
+        filter: `id=eq.${supportChatId}`,
+      }, (payload) => {
+        if (active) setSupportChatStatus((payload.new as { status: 'open' | 'closed' }).status);
+      })
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR' && active) {
+          setSupportChatError('Live updates are temporarily unavailable. Reopen this chat to refresh.');
+        }
+      });
+
+    return () => {
+      active = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [isSupabaseConfigured, screen, supportChatId]);
 
   useEffect(() => {
     if (!isHydrated || (role !== 'buyer' && role !== 'admin') || (screen !== 'orders' && screen !== 'dashboard' && screen !== 'tracking')) return;
@@ -3066,7 +3197,7 @@ function AppContent() {
         if (error) throw error;
       }
     } catch (error: unknown) {
-      setDashboardNotice(error instanceof Error ? error.message : 'Unable to sign out completely.');
+      setDashboardNotice(getErrorMessage(error, 'Unable to sign out completely.'));
     }
     setRole(null);
     setCurrentUserId(null);
@@ -3145,29 +3276,13 @@ function AppContent() {
       if (result.canceled) return;
       const asset = result.assets[0];
       if (!asset.base64) throw new Error('Could not read the selected photo. Please choose it again.');
-      const mimeType = asset.mimeType || 'image/jpeg';
-      if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
-        throw new Error('Choose a JPG, PNG, or WebP profile picture.');
-      }
-      if (asset.base64.length > 7_000_000) throw new Error('Choose a profile picture smaller than 5 MB.');
-
       setIsUploadingProfilePhoto(true);
-      const userData = await getCurrentAuthenticatedUser();
-      if (!userData) throw new Error('Sign in before updating your profile picture.');
-      const binary = atob(asset.base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-      const path = `${userData.id}/avatar`;
-      const { error: uploadError } = await supabase.storage.from('profile-photos').upload(path, bytes.buffer, {
-        contentType: mimeType,
-        upsert: true,
+      const upload = await uploadSecureImage({
+        base64: asset.base64,
+        mimeType: asset.mimeType,
+        purpose: 'profile-photo',
       });
-      if (uploadError) throw uploadError;
-      const { error: profileError } = await supabase.from('profiles')
-        .update({ avatar_path: path })
-        .eq('id', userData.id);
-      if (profileError) throw profileError;
-      setProfilePhotoPath(path);
+      setProfilePhotoPath(upload.path);
       setProfilePhotoVersion(Date.now());
       notify('Profile picture updated');
     } catch (error: unknown) {
@@ -3495,6 +3610,68 @@ function AppContent() {
       setChatError(getErrorMessage(error, 'Unable to send your message.'));
     } finally {
       setIsSendingChat(false);
+    }
+  };
+
+  const openSupportChat = async () => {
+    if (!currentUserId || role !== 'buyer' || isGuestBrowsing || !isSupabaseConfigured) {
+      setSupportChatError('Sign in with a buyer account to start a live chat.');
+      return;
+    }
+    setIsLoadingSupportChat(true);
+    setSupportChatError('');
+    try {
+      const { data, error } = await supabase.rpc('start_support_chat');
+      if (error) throw error;
+      if (typeof data !== 'string' || !data) throw new Error('Could not open a support chat.');
+      setSupportChatId(data);
+      setSupportChatMessages([]);
+      setSupportChatDraft('');
+      setSupportChatStatus('open');
+      setScreen('supportChat');
+    } catch (error: unknown) {
+      setSupportChatError(getErrorMessage(error, 'Unable to start a live chat.'));
+    } finally {
+      setIsLoadingSupportChat(false);
+    }
+  };
+
+  const sendSupportChatMessage = async () => {
+    if (!supportChatId || !supportChatDraft.trim() || supportChatStatus !== 'open') return;
+    setIsSendingSupportChat(true);
+    setSupportChatError('');
+    const body = supportChatDraft.trim();
+    try {
+      const { data, error } = await supabase.rpc('send_support_chat_message', {
+        p_conversation_id: supportChatId,
+        p_message: body,
+      });
+      if (error) throw error;
+      if (typeof data !== 'string' || !data || !currentUserId) {
+        throw new Error('The message could not be confirmed as sent.');
+      }
+
+      setSupportChatMessages((current) => [...current, {
+        id: data,
+        conversation_id: supportChatId,
+        sender_id: currentUserId,
+        sender_type: 'customer',
+        body,
+        created_at: new Date().toISOString(),
+      }]);
+      setSupportChatDraft('');
+
+      const { error: assistantError } = await supabase.functions.invoke('support-chat-faq', {
+        body: { conversation_id: supportChatId, message_id: data },
+      });
+      if (assistantError) {
+        console.error('The support FAQ assistant could not respond.', assistantError);
+        setSupportChatError('Your message was sent. The help assistant is unavailable right now, but customer service can still reply here.');
+      }
+    } catch (error: unknown) {
+      setSupportChatError(getErrorMessage(error, 'Unable to send your message.'));
+    } finally {
+      setIsSendingSupportChat(false);
     }
   };
 
@@ -3856,7 +4033,7 @@ function AppContent() {
         setScreen(role === 'seller' ? 'sellerSetup' : role === 'delivery' ? 'deliverySetup' : 'location');
       }
     } catch (error: unknown) {
-      setAuthError(error instanceof Error ? error.message : 'Unable to create your account.');
+      setAuthError(getErrorMessage(error, 'Unable to create your account.'));
     } finally {
       setIsSubmittingAuth(false);
     }
@@ -4209,16 +4386,13 @@ function AppContent() {
     let imageUrl = input.imageUri;
     if (input.imageUri && !input.imageUri.startsWith('http')) {
       if (!input.imageBase64) throw new Error('Could not read the selected image. Please choose it again.');
-      const binaryImage = atob(input.imageBase64);
-      const imageBytes = new Uint8Array(binaryImage.length);
-      for (let index = 0; index < binaryImage.length; index += 1) imageBytes[index] = binaryImage.charCodeAt(index);
-      const fileName = `${userData.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const { error: uploadError } = await supabase.storage.from('product-images').upload(fileName, imageBytes.buffer, {
-        contentType: input.imageMimeType,
-        upsert: false,
+      const upload = await uploadSecureImage({
+        base64: input.imageBase64,
+        mimeType: input.imageMimeType,
+        purpose: 'product-image',
       });
-      if (uploadError) throw uploadError;
-      imageUrl = supabase.storage.from('product-images').getPublicUrl(fileName).data.publicUrl;
+      if (!upload.publicUrl) throw new Error('The image upload service did not return a public image URL.');
+      imageUrl = upload.publicUrl;
     }
 
     const productPayload = {
@@ -4311,13 +4485,15 @@ function AppContent() {
     const accepted: BulkProductDraft[] = [];
     const rejected: string[] = [];
     assets.slice(0, remainingSlots).forEach((asset, index) => {
-      const mimeType = asset.mimeType || 'image/jpeg';
-      if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
-        rejected.push(asset.fileName || `Photo ${index + 1} (unsupported format)`);
+      if (!asset.base64) {
+        rejected.push(asset.fileName || `Photo ${index + 1} (over 5 MB or unreadable)`);
         return;
       }
-      if (!asset.base64 || Math.ceil(asset.base64.length * 3 / 4) > 5 * 1024 * 1024) {
-        rejected.push(asset.fileName || `Photo ${index + 1} (over 5 MB or unreadable)`);
+      let mimeType: string;
+      try {
+        mimeType = decodeAndValidateImage(asset.base64, asset.mimeType).mimeType;
+      } catch {
+        rejected.push(asset.fileName || `Photo ${index + 1} (invalid format or over 5 MB)`);
         return;
       }
       accepted.push({
@@ -4451,7 +4627,7 @@ function AppContent() {
       setInventory((current) => current.filter((item) => item.id !== product.id));
       notify(`${product.name} removed from inventory`);
     } catch (error: unknown) {
-      setDashboardNotice(error instanceof Error ? error.message : 'Unable to remove product.');
+      setDashboardNotice(getErrorMessage(error, 'Unable to remove product.'));
     }
   };
 
@@ -4871,7 +5047,7 @@ function AppContent() {
         notify('Payment confirmed. Seller has been notified.');
       }
     } catch (error: unknown) {
-      setAuthError(getErrorMessage(error, 'Unable to verify this Monnify payment.'));
+      setAuthError(await getFunctionErrorMessage(error, 'Unable to verify this Monnify payment.'));
     } finally {
       setIsCheckingPayment(false);
     }
@@ -4909,7 +5085,7 @@ function AppContent() {
         }
       }
     } catch (error: unknown) {
-      setAuthError(getErrorMessage(error, 'Unable to record the simulated payment result.'));
+      setAuthError(await getFunctionErrorMessage(error, 'Unable to record the simulated payment result.'));
     } finally {
       setIsCheckingPayment(false);
     }
@@ -4929,13 +5105,10 @@ function AppContent() {
       if (result.canceled) return;
       const asset = result.assets[0];
       if (!asset.base64) throw new Error('Could not read the selected photo. Please choose it again.');
-      const mimeType = asset.mimeType || 'image/jpeg';
-      if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
-        throw new Error('Choose a JPG, PNG, or WebP photo.');
-      }
+      const image = decodeAndValidateImage(asset.base64, asset.mimeType);
       setVerificationPhotos((current) => ({
         ...current,
-        [key]: { uri: asset.uri, base64: asset.base64, mimeType },
+        [key]: { uri: asset.uri, base64: asset.base64, mimeType: image.mimeType },
       }));
     } catch (error: unknown) {
       setDashboardNotice(getErrorMessage(error, 'Unable to select a verification photo.'));
@@ -4945,18 +5118,17 @@ function AppContent() {
   const uploadVerificationPhoto = async (key: VerificationPhotoKey) => {
     const photo = verificationPhotos[key];
     if (!photo) throw new Error('Add all requested verification photos before submitting.');
-    const userData = await getCurrentAuthenticatedUser();
-    if (!userData) throw new Error('Sign in before uploading verification documents.');
-    const binary = atob(photo.base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    const extension = photo.mimeType === 'image/png' ? 'png' : photo.mimeType === 'image/webp' ? 'webp' : 'jpg';
-    const path = `${userData.id}/${key}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
-    const { error } = await supabase.storage.from('verification-documents').upload(path, bytes.buffer, {
-      contentType: photo.mimeType,
-      upsert: false,
+    const documentType = key === 'sellerId'
+      ? 'seller_id'
+      : key === 'driverLicense'
+        ? 'driver_license'
+        : key;
+    const { path } = await uploadSecureImage({
+      base64: photo.base64,
+      mimeType: photo.mimeType,
+      purpose: 'verification-document',
+      documentType,
     });
-    if (error) throw error;
     return path;
   };
 
@@ -5377,16 +5549,10 @@ function AppContent() {
       const asset = result.assets[0];
       const base64 = asset.base64;
       if (!base64) throw new Error('Could not read the selected photo. Please choose it again.');
-      const mimeType = asset.mimeType || 'image/jpeg';
-      if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
-        throw new Error('Choose a JPG, PNG, or WebP delivery photo.');
-      }
-      if (Math.ceil(base64.length * 3 / 4) > 8 * 1024 * 1024) {
-        throw new Error('Choose a delivery photo smaller than 8 MB.');
-      }
+      const image = decodeAndValidateImage(base64, asset.mimeType);
       setDeliveryProofDrafts((current) => ({
         ...current,
-        [orderId]: { uri: asset.uri, base64, mimeType },
+        [orderId]: { uri: asset.uri, base64, mimeType: image.mimeType },
       }));
     } catch (error: unknown) {
       setDashboardNotice(getErrorMessage(error, 'Unable to select delivery proof.'));
@@ -5402,18 +5568,12 @@ function AppContent() {
     setDashboardNotice('');
     setSubmittingDeliveryProofId(orderId);
     try {
-      const userData = await getCurrentAuthenticatedUser();
-      if (!userData) throw new Error('Sign in before completing this delivery.');
-      const binary = atob(photo.base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-      const extension = photo.mimeType === 'image/png' ? 'png' : photo.mimeType === 'image/webp' ? 'webp' : 'jpg';
-      const proofPath = `${orderId}/${userData.id}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
-      const { error: uploadError } = await supabase.storage.from('delivery-proofs').upload(proofPath, bytes.buffer, {
-        contentType: photo.mimeType,
-        upsert: false,
+      const { path: proofPath } = await uploadSecureImage({
+        base64: photo.base64,
+        mimeType: photo.mimeType,
+        purpose: 'delivery-proof',
+        orderId,
       });
-      if (uploadError) throw uploadError;
       const { error } = await supabase.rpc('complete_delivery_with_proof', {
         p_order_id: orderId,
         p_delivery_proof_path: proofPath,
@@ -5497,9 +5657,11 @@ function AppContent() {
       });
       if (!result.canceled) {
         const asset = result.assets[0];
+        if (!asset.base64) throw new Error('Could not read the selected image. Please choose it again.');
+        const image = decodeAndValidateImage(asset.base64, asset.mimeType);
         setNewProductImage(asset.uri);
         setNewProductImageBase64(asset.base64 ?? null);
-        setNewProductImageMimeType(asset.mimeType ?? 'image/jpeg');
+        setNewProductImageMimeType(image.mimeType);
       }
     } catch (error: unknown) {
       setAuthError(getErrorMessage(error, 'Unable to open the photo library.'));
@@ -8936,6 +9098,72 @@ function AppContent() {
     );
   }
 
+  if (screen === 'supportChat') {
+    return (
+      <Shell toast={toast}>
+        <View style={styles.profileTopBar}>
+          <BackButton onPress={() => setScreen('support')} />
+          <Text style={styles.pageTitleLeft}>GetBuy live chat</Text>
+          <View />
+        </View>
+        <Text style={styles.pageDescriptionLeft}>
+          {supportChatStatus === 'open'
+            ? 'A customer service teammate can see and reply to this conversation.'
+            : 'This conversation is closed. Start a new chat if you need more help.'}
+        </Text>
+        {supportChatError ? <Text style={styles.authError}>{supportChatError}</Text> : null}
+        {isLoadingSupportChat ? <Text style={styles.emptyText}>Loading messages…</Text> : null}
+        {!isLoadingSupportChat && supportChatMessages.length === 0 ? (
+          <View style={styles.emptyState}>
+            <View style={styles.emptyIconWrap}><Ionicons color="#1B4D8F" name="chatbubbles-outline" size={40} /></View>
+            <Text style={styles.emptyTitle}>How can we help?</Text>
+            <Text style={styles.emptyText}>Ask a question or share an order number. The help assistant answers common questions and passes other requests to customer service.</Text>
+          </View>
+        ) : supportChatMessages.map((message) => (
+          <View
+            key={message.id}
+            style={[
+              styles.featureCard,
+              { alignSelf: message.sender_type === 'customer' ? 'flex-end' : 'flex-start', maxWidth: '90%' },
+            ]}
+          >
+            <Text style={styles.productStore}>
+              {message.sender_type === 'customer' ? 'You' : message.sender_type === 'bot' ? 'GetBuy assistant' : 'Customer service'}
+            </Text>
+            <Text style={styles.productName}>{message.body}</Text>
+            <Text style={styles.notificationTime}>{new Date(message.created_at).toLocaleString()}</Text>
+          </View>
+        ))}
+        {supportChatStatus === 'open' ? (
+          <>
+            <TextInput
+              accessibilityLabel="Live chat message"
+              editable={!isSendingSupportChat}
+              maxLength={2000}
+              multiline
+              onChangeText={setSupportChatDraft}
+              placeholder="Write a message…"
+              placeholderTextColor="#8B9DB2"
+              style={[styles.input, styles.multilineInput]}
+              value={supportChatDraft}
+            />
+            <PrimaryButton
+              label={isSendingSupportChat ? 'Sending…' : 'Send message'}
+              disabled={isSendingSupportChat || !supportChatDraft.trim() || !supportChatId}
+              onPress={() => void sendSupportChatMessage()}
+            />
+          </>
+        ) : (
+          <PrimaryButton
+            label={isLoadingSupportChat ? 'Starting…' : 'Start a new chat'}
+            disabled={isLoadingSupportChat}
+            onPress={() => void openSupportChat()}
+          />
+        )}
+      </Shell>
+    );
+  }
+
   if (screen === 'saved') {
     return (
       <Shell>
@@ -9272,8 +9500,21 @@ function AppContent() {
       <Shell>
         <BackButton onPress={() => setScreen('tracking')} />
         <Text style={styles.pageTitleLeft}>How can we help?</Text>
-        <Text style={styles.pageDescriptionLeft}>Find order guidance or email the GetBuy support team.</Text>
+        <Text style={styles.pageDescriptionLeft}>Find order guidance, chat with customer service, or email the GetBuy support team.</Text>
+        {supportChatError ? <Text style={styles.authError}>{supportChatError}</Text> : null}
         <View style={styles.supportOptions}>
+          {role === 'buyer' && currentUserId && !isGuestBrowsing ? (
+            <Pressable accessibilityRole="button" disabled={isLoadingSupportChat} onPress={() => void openSupportChat()} style={styles.supportOption}>
+              <View style={styles.supportIcon}><Ionicons color="#143A73" name="chatbubbles-outline" size={19} /></View>
+              <View style={styles.productCopy}>
+                <Text style={styles.productName}>{isLoadingSupportChat ? 'Opening live chat…' : 'Chat with customer service'}</Text>
+                <Text style={styles.productStore}>Get quick FAQ help or talk to our team</Text>
+              </View>
+              <Ionicons color="#143A73" name="arrow-forward" size={19} />
+            </Pressable>
+          ) : (
+            <Text style={styles.orderSummaryText}>Live chat is available to signed-in buyer accounts.</Text>
+          )}
           <Pressable accessibilityRole="link" onPress={contactSupport} style={styles.supportOption}>
             <View style={styles.supportIcon}><Ionicons color="#143A73" name="mail-outline" size={19} /></View>
             <View style={styles.productCopy}>

@@ -84,3 +84,16 @@ The rewards rules are fixed in the migration. Refunds remain manual; no payment-
 Apply `20261108150000_product_variants_and_custom_cart.sql` after the marketplace migrations above, then deploy the updated `monnify-payment` and `payment-simulator` Edge Functions. Sellers can keep base-unit pricing and add separately priced, separately stocked size/pack options. Buyers can enter a custom base-unit amount or choose a seller-defined option; checkout revalidates the selected stock and price atomically. Cancellation and failed-payment flows return reserved quantities to the matching inventory.
 
 The buyer cart supports category groups, item selection, removal, quantity changes, and promo previews against selected items. Existing product reviews remain verified store reviews; the product page does not invent product-specific ratings.
+
+## Admin staff roles
+
+The admin portal supports separate staff accounts for customer service, account management, and finance. Existing accounts with `profiles.role = 'admin'` are preserved as super administrators.
+
+To enable role-scoped access:
+
+1. Review and apply `20261126170000_admin_role_scoping.sql` to the Supabase project.
+2. Deploy the `admin-manage-staff` Edge Function and include its `verify_jwt = true` setting from `supabase/config.toml`.
+3. Build and deploy the admin web app.
+4. Sign in as a super administrator and use **Staff access** to invite team members or assign roles to existing GetBuy accounts. New staff receive a password setup email; existing accounts keep their current sign-in details.
+
+Customer service can handle issue reports and cancellation requests; account managers handle store, rider, and product operations; finance staff handle refunds, reports, and payouts. Super administrators retain all sections and manage staff. Do not share passwords between staff members.

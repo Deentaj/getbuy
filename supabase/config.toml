@@ -17,3 +17,15 @@ verify_jwt = false
 
 [functions.payment-simulator]
 verify_jwt = false
+
+[functions.secure-image-upload]
+verify_jwt = true
+
+[functions.log-client-error]
+verify_jwt = true
+
+[functions.admin-manage-staff]
+verify_jwt = true
+
+[functions.support-chat-faq]
+verify_jwt = true

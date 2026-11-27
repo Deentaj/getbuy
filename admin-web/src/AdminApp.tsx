@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import type { ReactNode } from 'react';
 import getBuyLogo from '../../assets/getbuy-logo.svg?url';
 import getBuyLogoInverse from '../../assets/getbuy-logo-inverse.svg?url';
+import { formatErrorForUser, type ClientErrorReport } from '../../lib/errorReporting';
+import { ADMIN_ROLE_LABELS, STAFF_ROLES, getAdminTabs, isAdminRole, isStaffRole, type AdminRole, type AdminSectionIcon, type AdminTab, type StaffRole } from './adminAccess';
 import { supabase, supabaseConfigured } from './supabase';
+import { listSupportEmails, readSupportEmail, replyToSupportEmail, SupportEmailRequestError, type SupportEmailDetail, type SupportEmailSummary } from './supportEmailApi';
 
-type Tab = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'support' | 'reports' | 'activity' | 'payouts';
+type Tab = AdminTab;
 type PeopleRoleFilter = 'all' | 'buyer' | 'seller' | 'delivery';
 type RiderFilter = 'all' | 'available' | 'offline' | 'verified' | 'needs-review';
-type IconName = 'overview' | 'orders' | 'stores' | 'products' | 'people' | 'support' | 'reports' | 'activity' | 'payouts' | 'check' | 'arrow-right' | 'refresh' | 'search' | 'external';
+type IconName = AdminSectionIcon | 'check' | 'arrow-right' | 'refresh' | 'search' | 'external';
 type FinanceData = {
   collection_account: { bank_name: string; account_name: string; account_number: string } | null;
   payouts: Array<{
@@ -70,6 +73,22 @@ type SupportIssue = {
   admin_note: string;
   created_at: string;
 };
+type SupportChatConversation = {
+  id: string;
+  customer_id: string;
+  assigned_staff_id: string | null;
+  status: 'open' | 'closed';
+  last_message_at: string;
+  updated_at: string;
+};
+type SupportChatMessage = {
+  id: string;
+  conversation_id: string;
+  sender_id: string | null;
+  sender_type: 'customer' | 'staff' | 'bot';
+  body: string;
+  created_at: string;
+};
 type CancellationRequest = {
   id: string;
   order_id: string;
@@ -122,6 +141,12 @@ type ActivityLogEntry = {
   entity_type: string;
   entity_id: string;
   details: Record<string, string | number | boolean | null>;
+  created_at: string;
+};
+type StaffMember = {
+  user_id: string;
+  email: string;
+  role: AdminRole;
   created_at: string;
 };
 type RiderRequest = {
@@ -189,18 +214,6 @@ type Snapshot = {
   }>;
 };
 
-const tabs: Array<{ id: Tab; label: string; icon: IconName }> = [
-  { id: 'overview', label: 'Overview', icon: 'overview' },
-  { id: 'orders', label: 'Orders', icon: 'orders' },
-  { id: 'stores', label: 'Stores', icon: 'stores' },
-  { id: 'products', label: 'Products', icon: 'products' },
-  { id: 'people', label: 'People & riders', icon: 'people' },
-  { id: 'support', label: 'Support & refunds', icon: 'support' },
-  { id: 'reports', label: 'Revenue reports', icon: 'reports' },
-  { id: 'activity', label: 'Activity log', icon: 'activity' },
-  { id: 'payouts', label: 'Payouts', icon: 'payouts' },
-];
-
 function localDateInput(daysAgo = 0) {
   const date = new Date();
   date.setDate(date.getDate() - daysAgo);
@@ -244,13 +257,19 @@ function Icon({ name }: { name: IconName }) {
 }
 
 function messageOf(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
-    const details = 'details' in error && typeof error.details === 'string' ? ` ${error.details}` : '';
-    const hint = 'hint' in error && typeof error.hint === 'string' ? ` ${error.hint}` : '';
-    return `${error.message}${details}${hint}`;
+  return formatErrorForUser(error, 'Something went wrong. Please try again.', 'admin', 'Admin dashboard', sendAdminErrorReport);
+}
+
+function supportEmailMessageOf(error: unknown) {
+  if (error instanceof SupportEmailRequestError) {
+    return error.errorId ? `${error.message} (Error ID: ${error.errorId})` : error.message;
   }
-  return 'An unexpected error occurred. Please try again.';
+  return messageOf(error);
+}
+
+async function sendAdminErrorReport(report: ClientErrorReport) {
+  const { error } = await supabase.functions.invoke('log-client-error', { body: report });
+  if (error) throw error;
 }
 
 function money(amount: number) {
@@ -274,7 +293,9 @@ function RoleBadge({ role }: { role: string }) {
 
 export default function AdminApp() {
   const [session, setSession] = useState<Session | null>(null);
+  const authorizedUserId = useRef<string | null>(null);
   const [authorized, setAuthorized] = useState(false);
+  const [adminRole, setAdminRole] = useState<AdminRole | null>(null);
   const [checkingRole, setCheckingRole] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -293,6 +314,24 @@ export default function AdminApp() {
   const [riderRequests, setRiderRequests] = useState<RiderRequest[]>([]);
   const [finance, setFinance] = useState<FinanceData>({ collection_account: null, payouts: [], remittances: [] });
   const [supportIssues, setSupportIssues] = useState<SupportIssue[]>([]);
+  const [supportEmails, setSupportEmails] = useState<SupportEmailSummary[]>([]);
+  const [selectedSupportEmailUid, setSelectedSupportEmailUid] = useState<number | null>(null);
+  const [selectedSupportEmail, setSelectedSupportEmail] = useState<SupportEmailDetail | null>(null);
+  const [supportEmailReply, setSupportEmailReply] = useState('');
+  const [supportEmailLoading, setSupportEmailLoading] = useState(false);
+  const [supportEmailReading, setSupportEmailReading] = useState(false);
+  const [supportEmailSending, setSupportEmailSending] = useState(false);
+  const [supportEmailError, setSupportEmailError] = useState('');
+  const [supportEmailNotice, setSupportEmailNotice] = useState('');
+  const [supportChats, setSupportChats] = useState<SupportChatConversation[]>([]);
+  const [selectedSupportChatId, setSelectedSupportChatId] = useState<string | null>(null);
+  const [supportChatMessages, setSupportChatMessages] = useState<SupportChatMessage[]>([]);
+  const [supportChatDraft, setSupportChatDraft] = useState('');
+  const [supportChatLoading, setSupportChatLoading] = useState(false);
+  const [supportChatSending, setSupportChatSending] = useState(false);
+  const [supportChatBusyId, setSupportChatBusyId] = useState('');
+  const [supportChatError, setSupportChatError] = useState('');
+  const [supportChatNotice, setSupportChatNotice] = useState('');
   const [cancellationRequests, setCancellationRequests] = useState<CancellationRequest[]>([]);
   const [refundRequests, setRefundRequests] = useState<RefundRequest[]>([]);
   const [revenueReport, setRevenueReport] = useState<RevenueReport | null>(null);
@@ -306,31 +345,84 @@ export default function AdminApp() {
   const [collectionAccountName, setCollectionAccountName] = useState('');
   const [collectionAccountNumber, setCollectionAccountNumber] = useState('');
   const [collectionAccountNotice, setCollectionAccountNotice] = useState('');
+  const [staffMembers, setStaffMembers] = useState<StaffMember[]>([]);
+  const [staffEmail, setStaffEmail] = useState('');
+  const [staffRole, setStaffRole] = useState<StaffRole>('customer_service');
+  const [staffNotice, setStaffNotice] = useState('');
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState('');
+  const supportEmailReadVersion = useRef(0);
+
+  const tabs = useMemo(() => adminRole ? getAdminTabs(adminRole) : [], [adminRole]);
+
+  useEffect(() => {
+    if (tabs.length > 0 && !tabs.some((item) => item.id === tab)) setTab(tabs[0].id);
+  }, [tab, tabs]);
 
   const authorize = useCallback(async (nextSession: Session | null) => {
+    const nextUserId = nextSession?.user.id || null;
+    if (nextUserId !== authorizedUserId.current) {
+      authorizedUserId.current = nextUserId;
+      setTab('overview');
+      setSearch('');
+      setSnapshot(null);
+      setStoreRequests([]);
+      setStoreSubaccounts({});
+      setStoreSubaccountDrafts({});
+      setRiderRequests([]);
+      setFinance({ collection_account: null, payouts: [], remittances: [] });
+      setSupportIssues([]);
+      setSupportEmails([]);
+      setSelectedSupportEmailUid(null);
+      setSelectedSupportEmail(null);
+      setSupportEmailReply('');
+      setSupportEmailLoading(false);
+      setSupportEmailReading(false);
+      setSupportEmailSending(false);
+      setSupportEmailError('');
+      setSupportEmailNotice('');
+      supportEmailReadVersion.current += 1;
+      setCancellationRequests([]);
+      setRefundRequests([]);
+      setRevenueReport(null);
+      setActivityLog([]);
+      setStaffMembers([]);
+      setSupportIssueNotes({});
+      setSupportNotice('');
+      setCancellationNotes({});
+      setRefundDrafts({});
+      setTransferReferences({});
+      setCollectionBankName('');
+      setCollectionAccountName('');
+      setCollectionAccountNumber('');
+      setCollectionAccountNotice('');
+      setStaffEmail('');
+      setStaffNotice('');
+      setBusyId('');
+      setLoading(false);
+      setError('');
+    }
     setSession(nextSession);
     setAuthorized(false);
+    setAdminRole(null);
     if (!nextSession) {
       setCheckingRole(false);
       return;
     }
 
     setCheckingRole(true);
-    const { data, error: roleError } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', nextSession.user.id)
-      .single();
-    if (roleError || data?.role !== 'admin') {
+    const { data, error: roleError } = await supabase.rpc('get_admin_staff_role');
+    if (roleError || !isAdminRole(data)) {
+      const accessError = roleError ? messageOf(roleError) : 'This account does not have administrator access.';
       await supabase.auth.signOut();
       setSession(null);
-      setError(roleError ? `Unable to confirm admin access: ${roleError.message}` : 'This account does not have administrator access.');
+      setAdminRole(null);
+      setError(accessError);
       setCheckingRole(false);
       return;
     }
 
+    setAdminRole(data);
     setError('');
     setAuthorized(true);
     setCheckingRole(false);
@@ -358,10 +450,14 @@ export default function AdminApp() {
   }, [authorize]);
 
   const loadDashboard = useCallback(async () => {
-    if (!authorized) return;
+    if (!authorized || !adminRole) return;
     setLoading(true);
     setError('');
     try {
+      const isSuperAdmin = adminRole === 'super_admin';
+      const canManageAccounts = isSuperAdmin || adminRole === 'account_manager';
+      const canHandleSupport = isSuperAdmin || adminRole === 'customer_service';
+      const canHandleFinance = isSuperAdmin || adminRole === 'finance';
       const [
         { data: snapshotData, error: snapshotError },
         { data: storeData, error: storeError },
@@ -373,23 +469,33 @@ export default function AdminApp() {
         { data: refundData, error: refundError },
         { data: revenueData, error: revenueError },
         { data: activityData, error: activityError },
+        { data: staffData, error: staffError },
       ] = await Promise.all([
-        supabase.rpc('get_admin_dashboard_snapshot'),
-        supabase.rpc('get_store_verification_queue'),
-        supabase.from('store_monnify_subaccounts').select('store_id, sub_account_code'),
-        supabase.rpc('get_rider_verification_queue'),
-        supabase.rpc('get_admin_finance_dashboard'),
-        supabase.from('order_issues')
+        isSuperAdmin
+          ? supabase.rpc('get_admin_dashboard_snapshot')
+          : adminRole === 'account_manager'
+            ? supabase.rpc('get_admin_accounts_snapshot')
+            : Promise.resolve({ data: null, error: null }),
+        canManageAccounts ? supabase.rpc('get_store_verification_queue') : Promise.resolve({ data: null, error: null }),
+        isSuperAdmin
+          ? supabase.from('store_monnify_subaccounts').select('store_id, sub_account_code')
+          : Promise.resolve({ data: null, error: null }),
+        canManageAccounts ? supabase.rpc('get_rider_verification_queue') : Promise.resolve({ data: null, error: null }),
+        canHandleFinance ? supabase.rpc('get_admin_finance_dashboard') : Promise.resolve({ data: null, error: null }),
+        canHandleSupport ? supabase.from('order_issues')
           .select('id, order_id, buyer_id, issue_type, description, status, admin_note, created_at')
-          .order('created_at', { ascending: false }).limit(100),
-        supabase.from('order_cancellation_requests')
+          .order('created_at', { ascending: false }).limit(100) : Promise.resolve({ data: null, error: null }),
+        canHandleSupport ? supabase.from('order_cancellation_requests')
           .select('id, order_id, buyer_id, reason, status, admin_note, created_at')
-          .order('created_at', { ascending: false }).limit(100),
-        supabase.from('order_refunds')
+          .order('created_at', { ascending: false }).limit(100) : Promise.resolve({ data: null, error: null }),
+        canHandleFinance ? supabase.from('order_refunds')
           .select('id, order_id, buyer_id, amount, status, provider_reference, admin_note, created_at')
-          .order('created_at', { ascending: false }).limit(100),
-        supabase.rpc('get_admin_revenue_report', { p_from: reportFrom, p_to: reportTo }),
-        supabase.rpc('get_admin_activity_log', { p_limit: 100 }),
+          .order('created_at', { ascending: false }).limit(100) : Promise.resolve({ data: null, error: null }),
+        canHandleFinance
+          ? supabase.rpc('get_admin_revenue_report', { p_from: reportFrom, p_to: reportTo })
+          : Promise.resolve({ data: null, error: null }),
+        isSuperAdmin ? supabase.rpc('get_admin_activity_log', { p_limit: 100 }) : Promise.resolve({ data: null, error: null }),
+        isSuperAdmin ? supabase.rpc('get_admin_staff_directory') : Promise.resolve({ data: null, error: null }),
       ]);
       if (snapshotError) throw snapshotError;
       if (storeError) throw storeError;
@@ -401,9 +507,16 @@ export default function AdminApp() {
       if (refundError) throw refundError;
       if (revenueError) throw revenueError;
       if (activityError) throw activityError;
-      if (!snapshotData || typeof snapshotData !== 'object') throw new Error('Admin dashboard returned an invalid response.');
-      if (!financeData || typeof financeData !== 'object') throw new Error('Admin finance dashboard returned an invalid response.');
-      if (!revenueData || typeof revenueData !== 'object' || Array.isArray(revenueData)) throw new Error('Revenue report returned an invalid response.');
+      if (staffError) throw staffError;
+      if ((isSuperAdmin || adminRole === 'account_manager') && (!snapshotData || typeof snapshotData !== 'object')) {
+        throw new Error('Admin dashboard returned an invalid response.');
+      }
+      if (canHandleFinance && (!financeData || typeof financeData !== 'object')) {
+        throw new Error('Admin finance dashboard returned an invalid response.');
+      }
+      if (canHandleFinance && (!revenueData || typeof revenueData !== 'object' || Array.isArray(revenueData))) {
+        throw new Error('Revenue report returned an invalid response.');
+      }
 
       const relatedBuyerIds = [...new Set([
         ...((issueData || []) as SupportIssue[]).map((row) => row.buyer_id),
@@ -411,10 +524,11 @@ export default function AdminApp() {
         ...((refundData || []) as RefundRequest[]).map((row) => row.buyer_id),
       ])];
       const { data: buyerProfiles, error: buyerProfilesError } = relatedBuyerIds.length
-        ? await supabase.from('profiles').select('id, full_name').in('id', relatedBuyerIds)
+        ? await supabase.rpc('get_admin_support_buyer_names', { p_buyer_ids: relatedBuyerIds })
         : { data: [], error: null };
       if (buyerProfilesError) throw buyerProfilesError;
-      const buyerNames = new Map((buyerProfiles || []).map((profile) => [profile.id, profile.full_name]));
+      const buyerNames = new Map(((buyerProfiles || []) as Array<{ id: string; full_name: string | null }>)
+        .map((profile) => [profile.id, profile.full_name || '']));
       const signedUrl = async (path: string | null) => {
         if (!path) return undefined;
         const { data, error: urlError } = await supabase.storage
@@ -436,20 +550,21 @@ export default function AdminApp() {
           driver_license_photo_url: await signedUrl(request.driver_license_photo_path),
         }))),
       ]);
-      setSnapshot(snapshotData as Snapshot);
+      setSnapshot(snapshotData ? snapshotData as Snapshot : null);
       setStoreRequests(signedStores);
       const storeCodes = Object.fromEntries(((storeSubaccountData || []) as StoreMonnifySubaccount[])
         .map((row) => [row.store_id, row.sub_account_code]));
       setStoreSubaccounts(storeCodes);
       setStoreSubaccountDrafts(storeCodes);
       setRiderRequests(signedRiders);
-      setFinance(financeData as FinanceData);
+      setFinance((financeData || { collection_account: null, payouts: [], remittances: [] }) as FinanceData);
       setSupportIssues(((issueData || []) as SupportIssue[]).map((row) => ({ ...row, buyer_name: buyerNames.get(row.buyer_id) || '' })));
       setCancellationRequests(((cancellationData || []) as CancellationRequest[]).map((row) => ({ ...row, buyer_name: buyerNames.get(row.buyer_id) || '' })));
       setRefundRequests(((refundData || []) as RefundRequest[]).map((row) => ({ ...row, buyer_name: buyerNames.get(row.buyer_id) || '' })));
-      setRevenueReport(revenueData as RevenueReport);
+      setRevenueReport(revenueData ? revenueData as RevenueReport : null);
       setActivityLog((activityData || []) as ActivityLogEntry[]);
-      const collectionAccount = (financeData as FinanceData).collection_account;
+      setStaffMembers((staffData || []) as StaffMember[]);
+      const collectionAccount = (financeData as FinanceData | null)?.collection_account;
       setCollectionBankName(collectionAccount?.bank_name || '');
       setCollectionAccountName(collectionAccount?.account_name || '');
       setCollectionAccountNumber(collectionAccount?.account_number || '');
@@ -458,11 +573,230 @@ export default function AdminApp() {
     } finally {
       setLoading(false);
     }
-  }, [authorized, reportFrom, reportTo]);
+  }, [adminRole, authorized, reportFrom, reportTo]);
 
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
+
+  const canReadSupportMailbox = adminRole === 'super_admin' || adminRole === 'customer_service';
+  const loadSupportChats = useCallback(async () => {
+    if (!authorized || !canReadSupportMailbox) return;
+    setSupportChatLoading(true);
+    setSupportChatError('');
+    try {
+      const { data, error: loadError } = await supabase
+        .from('support_chat_conversations')
+        .select('id, customer_id, assigned_staff_id, status, last_message_at, updated_at')
+        .eq('status', 'open')
+        .order('last_message_at', { ascending: false })
+        .limit(100);
+      if (loadError) throw loadError;
+      setSupportChats((data || []) as SupportChatConversation[]);
+    } catch (loadError: unknown) {
+      setSupportChatError(messageOf(loadError));
+    } finally {
+      setSupportChatLoading(false);
+    }
+  }, [authorized, canReadSupportMailbox]);
+
+  useEffect(() => {
+    if (tab !== 'support' || !canReadSupportMailbox) return;
+    void loadSupportChats();
+    const channel = supabase.channel('admin-support-chat-queue')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'support_chat_conversations',
+      }, () => {
+        void loadSupportChats();
+      })
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          setSupportChatError('Live chat updates are temporarily unavailable. Refresh the queue to try again.');
+        }
+      });
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [canReadSupportMailbox, loadSupportChats, tab]);
+
+  useEffect(() => {
+    if (!authorized || !canReadSupportMailbox || !selectedSupportChatId) {
+      setSupportChatMessages([]);
+      return;
+    }
+    let active = true;
+    const loadMessages = async () => {
+      setSupportChatError('');
+      const { data, error: loadError } = await supabase
+        .from('support_chat_messages')
+        .select('id, conversation_id, sender_id, sender_type, body, created_at')
+        .eq('conversation_id', selectedSupportChatId)
+        .order('created_at', { ascending: true })
+        .limit(200);
+      if (loadError) throw loadError;
+      if (active) {
+        setSupportChatMessages((current) => {
+          const messagesById = new Map(
+            ((data || []) as SupportChatMessage[]).map((message) => [message.id, message]),
+          );
+          current.filter((message) => message.conversation_id === selectedSupportChatId)
+            .forEach((message) => messagesById.set(message.id, message));
+          return [...messagesById.values()].sort((first, second) =>
+            first.created_at.localeCompare(second.created_at),
+          );
+        });
+      }
+    };
+    void loadMessages().catch((loadError: unknown) => {
+      if (active) setSupportChatError(messageOf(loadError));
+    });
+
+    const channel = supabase.channel(`admin-support-chat-${selectedSupportChatId}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'support_chat_messages',
+        filter: `conversation_id=eq.${selectedSupportChatId}`,
+      }, (payload) => {
+        if (!active) return;
+        const newMessage = payload.new as SupportChatMessage;
+        setSupportChatMessages((current) => current.some((message) => message.id === newMessage.id)
+          ? current
+          : [...current, newMessage]);
+      })
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR' && active) {
+          setSupportChatError('Live updates are temporarily unavailable. Reopen this chat to refresh.');
+        }
+      });
+    return () => {
+      active = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [authorized, canReadSupportMailbox, selectedSupportChatId]);
+
+  const loadSupportMailbox = useCallback(async () => {
+    if (!authorized || !canReadSupportMailbox) return;
+    setSupportEmailLoading(true);
+    setSupportEmailError('');
+    try {
+      const messages = await listSupportEmails();
+      setSupportEmails(messages);
+    } catch (loadError: unknown) {
+      setSupportEmailError(supportEmailMessageOf(loadError));
+    } finally {
+      setSupportEmailLoading(false);
+    }
+  }, [authorized, canReadSupportMailbox]);
+
+  useEffect(() => {
+    if (tab === 'support' && canReadSupportMailbox) void loadSupportMailbox();
+  }, [canReadSupportMailbox, loadSupportMailbox, tab]);
+
+  const openSupportEmail = async (message: SupportEmailSummary) => {
+    const requestVersion = supportEmailReadVersion.current + 1;
+    supportEmailReadVersion.current = requestVersion;
+    setSelectedSupportEmailUid(message.uid);
+    setSelectedSupportEmail(null);
+    setSupportEmailReply('');
+    setSupportEmailError('');
+    setSupportEmailReading(true);
+    try {
+      const detail = await readSupportEmail(message.uid);
+      if (supportEmailReadVersion.current !== requestVersion) return;
+      setSelectedSupportEmail(detail);
+      setSupportEmails((current) => current.map((item) => item.uid === detail.uid ? { ...item, unread: false } : item));
+    } catch (readError: unknown) {
+      if (supportEmailReadVersion.current === requestVersion) setSupportEmailError(supportEmailMessageOf(readError));
+    } finally {
+      if (supportEmailReadVersion.current === requestVersion) setSupportEmailReading(false);
+    }
+  };
+
+  const sendSupportEmailReply = async () => {
+    if (!selectedSupportEmail || !supportEmailReply.trim()) return;
+    setSupportEmailSending(true);
+    setSupportEmailError('');
+    setSupportEmailNotice('');
+    try {
+      await replyToSupportEmail(selectedSupportEmail.uid, supportEmailReply);
+      setSupportEmailReply('');
+      setSupportEmailNotice('Reply sent from support@getbuy.com.ng.');
+    } catch (replyError: unknown) {
+      setSupportEmailError(supportEmailMessageOf(replyError));
+    } finally {
+      setSupportEmailSending(false);
+    }
+  };
+
+  const claimSupportChat = async (conversationId: string) => {
+    setSupportChatBusyId(conversationId);
+    setSupportChatError('');
+    setSupportChatNotice('');
+    try {
+      const { error: claimError } = await supabase.rpc('claim_support_chat', {
+        p_conversation_id: conversationId,
+      });
+      if (claimError) throw claimError;
+      setSupportChatNotice('Chat assigned to you.');
+      await loadSupportChats();
+    } catch (claimError: unknown) {
+      setSupportChatError(messageOf(claimError));
+    } finally {
+      setSupportChatBusyId('');
+    }
+  };
+
+  const sendSupportChatReply = async () => {
+    const conversation = supportChats.find((chat) => chat.id === selectedSupportChatId);
+    if (!conversation || !supportChatDraft.trim() || !session) return;
+    setSupportChatSending(true);
+    setSupportChatError('');
+    setSupportChatNotice('');
+    const body = supportChatDraft.trim();
+    try {
+      const { data, error: sendError } = await supabase.rpc('send_support_chat_message', {
+        p_conversation_id: conversation.id,
+        p_message: body,
+      });
+      if (sendError) throw sendError;
+      if (typeof data !== 'string' || !data) throw new Error('The reply could not be confirmed as sent.');
+      setSupportChatMessages((current) => [...current, {
+        id: data,
+        conversation_id: conversation.id,
+        sender_id: session.user.id,
+        sender_type: 'staff',
+        body,
+        created_at: new Date().toISOString(),
+      }]);
+      setSupportChatDraft('');
+      await loadSupportChats();
+    } catch (sendError: unknown) {
+      setSupportChatError(messageOf(sendError));
+    } finally {
+      setSupportChatSending(false);
+    }
+  };
+
+  const closeSupportChat = async (conversationId: string) => {
+    setSupportChatBusyId(conversationId);
+    setSupportChatError('');
+    setSupportChatNotice('');
+    try {
+      const { error: closeError } = await supabase.rpc('close_support_chat', {
+        p_conversation_id: conversationId,
+      });
+      if (closeError) throw closeError;
+      setSupportChatNotice('Chat closed.');
+      await loadSupportChats();
+    } catch (closeError: unknown) {
+      setSupportChatError(messageOf(closeError));
+    } finally {
+      setSupportChatBusyId('');
+    }
+  };
 
   const signIn = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -481,6 +815,48 @@ export default function AdminApp() {
     } finally {
       setSigningIn(false);
     }
+  };
+
+  const manageStaff = async (body: { action: 'invite' | 'set_role' | 'revoke'; email?: string; role?: StaffRole; user_id?: string }) => {
+    setError('');
+    setStaffNotice('');
+    try {
+      const { data, error: invokeError } = await supabase.functions.invoke('admin-manage-staff', { body });
+      if (invokeError) {
+        const context = typeof invokeError === 'object' && invokeError !== null && 'context' in invokeError
+          ? invokeError.context
+          : null;
+        if (context instanceof Response) {
+          const responseBody: unknown = await context.clone().json().catch(() => null);
+          if (typeof responseBody === 'object' && responseBody !== null) {
+            const details = responseBody as { error?: unknown; error_id?: unknown };
+            const message = typeof details.error === 'string' ? details.error : 'Unable to update staff access.';
+            setError(typeof details.error_id === 'string' ? `${message} (Error ID: ${details.error_id})` : message);
+            return;
+          }
+        }
+        setError(messageOf(invokeError));
+        return;
+      }
+
+      const notice = typeof data?.message === 'string' ? data.message : 'Staff access updated.';
+      setStaffNotice(typeof data?.warning === 'string' ? `${notice} ${data.warning}` : notice);
+      setStaffEmail('');
+      await loadDashboard();
+    } catch (manageError: unknown) {
+      setError(messageOf(manageError));
+    }
+  };
+
+  const updateStaffRole = (member: StaffMember, nextRole: StaffRole) => {
+    setBusyId(member.user_id);
+    void manageStaff({ action: 'set_role', user_id: member.user_id, role: nextRole }).finally(() => setBusyId(''));
+  };
+
+  const revokeStaffAccess = (member: StaffMember) => {
+    if (!window.confirm(`Revoke ${ADMIN_ROLE_LABELS[member.role]} access for ${member.email}?`)) return;
+    setBusyId(member.user_id);
+    void manageStaff({ action: 'revoke', user_id: member.user_id }).finally(() => setBusyId(''));
   };
 
   const review = async (id: string, kind: 'store' | 'rider', approved: boolean) => {
@@ -598,12 +974,15 @@ export default function AdminApp() {
       const code = saveError && typeof saveError === 'object' && 'code' in saveError
         ? String(saveError.code)
         : '';
-      const detail = messageOf(saveError);
-      setError(
+      setError(formatErrorForUser(
+        saveError,
         code === 'PGRST202' || code === '42883'
-          ? 'Supabase payout setup is incomplete: admin_save_cod_collection_account was not found. Apply the complete marketplace payout migration as postgres, then reload this admin page.'
-          : detail,
-      );
+          ? 'Finance settings are temporarily unavailable. Please contact support.'
+          : 'Unable to save finance settings. Please try again.',
+        'admin',
+        'save finance settings',
+        sendAdminErrorReport,
+      ));
     } finally {
       setBusyId('');
     }
@@ -746,6 +1125,17 @@ export default function AdminApp() {
       ...activityLog.map((row) => [row.created_at, row.actor_name, row.action, row.entity_type, row.entity_id, JSON.stringify(row.details)]),
     ]);
   };
+  const selectedSupportChat = supportChats.find((chat) => chat.id === selectedSupportChatId) || null;
+  const canReplyToSelectedSupportChat = Boolean(
+    selectedSupportChat
+    && session
+    && (adminRole === 'super_admin' || selectedSupportChat.assigned_staff_id === session.user.id),
+  );
+  const canCloseSelectedSupportChat = Boolean(
+    selectedSupportChat
+    && session
+    && (adminRole === 'super_admin' || selectedSupportChat.assigned_staff_id === session.user.id),
+  );
 
   if (!supabaseConfigured) {
     return <Login error="Supabase is not configured. Add the public Supabase URL and anon key to the root .env.local file." />;
@@ -775,7 +1165,7 @@ export default function AdminApp() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="user-chip"><span className="avatar">{(session.user.email || 'A')[0].toUpperCase()}</span><span className="user-details"><b>Administrator</b><small>{session.user.email}</small></span></div>
+          <div className="user-chip"><span className="avatar">{(session.user.email || 'A')[0].toUpperCase()}</span><span className="user-details"><b>{adminRole ? ADMIN_ROLE_LABELS[adminRole] : 'Staff'}</b><small>{session.user.email}</small></span></div>
           <button className="sign-out" onClick={() => { void supabase.auth.signOut(); }}>Sign out</button>
         </div>
       </aside>
@@ -783,12 +1173,12 @@ export default function AdminApp() {
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumb">GetBuy <span>/</span> Admin <span>/</span> <b>{tabs.find((item) => item.id === tab)?.label}</b></div>
-          <div className="topbar-actions"><span className="secure-label"><span /> Admin-only workspace</span><button className="button button-outline" disabled={loading} onClick={() => void loadDashboard()}><Icon name="refresh" />{loading ? 'Refreshing…' : 'Refresh'}</button></div>
+          <div className="topbar-actions"><span className="secure-label"><span /> Role-scoped workspace</span><button className="button button-outline" disabled={loading} onClick={() => void loadDashboard()}><Icon name="refresh" />{loading ? 'Refreshing…' : 'Refresh'}</button></div>
         </header>
         <div className="content">
           <div className="page-heading"><div><p className="eyebrow">GETBUY OPERATIONS</p><h1>{tab === 'overview' ? 'Marketplace overview' : tabs.find((item) => item.id === tab)?.label}</h1><p className="muted">Manage marketplace activity from one secure workspace.</p></div><div className="date-label">{new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</div></div>
           {error ? <div className="alert" role="alert">{error}</div> : null}
-          {loading && !snapshot ? <div className="empty-panel">Loading marketplace data…</div> : null}
+          {loading && !snapshot && tab !== 'staff' ? <div className="empty-panel">Loading your workspace…</div> : null}
 
           {tab === 'overview' && snapshot ? (
             <>
@@ -825,7 +1215,17 @@ export default function AdminApp() {
                 ))}
                 {storeRequests.length === 0 ? <Empty>No store requests are waiting for review.</Empty> : null}
               </section>
-              <section className="panel"><div className="section-heading"><div><h2>All stores</h2><p>{filtered.stores.length} shown · latest 100. Configure verified Monnify subaccount codes for seller payment splits.</p></div></div><div className="table-wrap"><table><thead><tr><th>STORE</th><th>OWNER</th><th>AREA</th><th>PRODUCTS</th><th>VERIFICATION</th><th>MONNIFY SUBACCOUNT</th></tr></thead><tbody>{filtered.stores.map((row) => <tr key={row.id}><td><b>{row.name}</b><small>{row.category}</small></td><td>{row.owner_name}</td><td>{row.market_area || '—'}</td><td>{row.product_count}</td><td><Status value={row.verification_status} /></td><td><div className="payout-transfer-row"><input aria-label={`Monnify subaccount code for ${row.name}`} onChange={(event) => setStoreSubaccountDrafts((current) => ({ ...current, [row.id]: event.target.value }))} placeholder="MFY_SUB_…" value={storeSubaccountDrafts[row.id] || ''} /><button className="table-action" disabled={busyId === row.id || (storeSubaccountDrafts[row.id] || '').trim() === (storeSubaccounts[row.id] || '')} onClick={() => void saveStoreSubaccount(row.id)}>{busyId === row.id ? 'Saving…' : 'Save'}</button></div></td></tr>)}</tbody></table>{filtered.stores.length === 0 ? <Empty>No matching stores.</Empty> : null}</div></section>
+              <section className="panel">
+                <div className="section-heading"><div><h2>All stores</h2><p>{filtered.stores.length} shown · latest 100.{adminRole === 'super_admin' ? ' Configure verified Monnify subaccount codes for seller payment splits.' : ''}</p></div></div>
+                <div className="table-wrap"><table><thead><tr><th>STORE</th><th>OWNER</th><th>AREA</th><th>PRODUCTS</th><th>VERIFICATION</th>{adminRole === 'super_admin' ? <th>MONNIFY SUBACCOUNT</th> : null}</tr></thead><tbody>
+                  {filtered.stores.map((row) => (
+                    <tr key={row.id}>
+                      <td><b>{row.name}</b><small>{row.category}</small></td><td>{row.owner_name}</td><td>{row.market_area || '—'}</td><td>{row.product_count}</td><td><Status value={row.verification_status} /></td>
+                      {adminRole === 'super_admin' ? <td><div className="payout-transfer-row"><input aria-label={`Monnify subaccount code for ${row.name}`} onChange={(event) => setStoreSubaccountDrafts((current) => ({ ...current, [row.id]: event.target.value }))} placeholder="MFY_SUB_…" value={storeSubaccountDrafts[row.id] || ''} /><button className="table-action" disabled={busyId === row.id || (storeSubaccountDrafts[row.id] || '').trim() === (storeSubaccounts[row.id] || '')} onClick={() => void saveStoreSubaccount(row.id)}>{busyId === row.id ? 'Saving…' : 'Save'}</button></div></td> : null}
+                    </tr>
+                  ))}
+                </tbody></table>{filtered.stores.length === 0 ? <Empty>No matching stores.</Empty> : null}</div>
+              </section>
             </>
           ) : null}
 
@@ -877,9 +1277,144 @@ export default function AdminApp() {
           ) : null}
           {tab === 'support' ? (
             <>
+              {adminRole !== 'finance' ? (
+                <>
               <section className="panel">
-                <div className="section-heading"><div><h2>Customer email</h2><p>Shared address: support@getbuy.com.ng · General emails are not yet imported into this queue.</p></div><Status value="Email not connected" /></div>
-                <p className="review-detail">Handle incoming email in its existing mailbox for now. Once the mailbox provider is confirmed, it can be connected so email conversations appear alongside these cases.</p>
+                <div className="section-heading">
+                  <div><h2>Live customer chats</h2><p>Open conversations are assigned round-robin. Claim an unassigned chat to respond.</p></div>
+                  <div className="review-actions">
+                    <Status value={`${supportChats.length} open`} />
+                    <button className="button button-outline" disabled={supportChatLoading} onClick={() => void loadSupportChats()}>{supportChatLoading ? 'Refreshing…' : 'Refresh chats'}</button>
+                  </div>
+                </div>
+                {supportChatError ? <div className="alert" role="alert">{supportChatError}</div> : null}
+                {supportChatNotice ? <div className="success-notice" role="status">{supportChatNotice}</div> : null}
+                <div className="live-chat-grid">
+                  <div className="live-chat-list" aria-label="Open customer chats">
+                    {supportChats.map((chat) => (
+                      <button
+                        className={`live-chat-item${selectedSupportChatId === chat.id ? ' live-chat-item-selected' : ''}`}
+                        key={chat.id}
+                        aria-pressed={selectedSupportChatId === chat.id}
+                        onClick={() => setSelectedSupportChatId(chat.id)}
+                      >
+                        <span className="live-chat-item-heading">
+                          <b>Buyer {chat.customer_id.slice(0, 8).toUpperCase()}</b>
+                          <span>{chat.assigned_staff_id === session?.user.id ? 'Assigned to you' : chat.assigned_staff_id ? 'Assigned' : 'Unassigned'}</span>
+                        </span>
+                        <small>Last message {new Date(chat.last_message_at).toLocaleString()}</small>
+                      </button>
+                    ))}
+                    {!supportChatLoading && supportChats.length === 0 ? <p className="mailbox-empty">No open live chats.</p> : null}
+                    {supportChatLoading && supportChats.length === 0 ? <p className="mailbox-empty">Loading chats…</p> : null}
+                  </div>
+                  <div className="live-chat-detail">
+                    {selectedSupportChat ? (
+                      <>
+                        <div className="live-chat-heading">
+                          <div>
+                            <h3>Buyer {selectedSupportChat.customer_id.slice(0, 8).toUpperCase()}</h3>
+                            <p>{selectedSupportChat.assigned_staff_id === session?.user.id
+                              ? 'Assigned to you'
+                              : selectedSupportChat.assigned_staff_id
+                                ? 'Assigned to another support teammate'
+                                : 'Unassigned chat'}</p>
+                          </div>
+                          <div className="review-actions">
+                            {!selectedSupportChat.assigned_staff_id ? (
+                              <button className="button button-primary" disabled={supportChatBusyId === selectedSupportChat.id} onClick={() => void claimSupportChat(selectedSupportChat.id)}>
+                                {supportChatBusyId === selectedSupportChat.id ? 'Claiming…' : 'Claim chat'}
+                              </button>
+                            ) : null}
+                            {canCloseSelectedSupportChat ? (
+                              <button className="button button-outline" disabled={supportChatBusyId === selectedSupportChat.id} onClick={() => void closeSupportChat(selectedSupportChat.id)}>
+                                {supportChatBusyId === selectedSupportChat.id ? 'Saving…' : 'Close chat'}
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="live-chat-feed" aria-live="polite">
+                          {supportChatMessages.map((message) => (
+                            <article
+                              className={`live-chat-message${message.sender_type === 'staff' ? ' live-chat-message-staff' : ''}${message.sender_type === 'customer' ? ' live-chat-message-customer' : ''}`}
+                              key={message.id}
+                            >
+                              <b>{message.sender_type === 'customer' ? 'Customer' : message.sender_type === 'bot' ? 'GetBuy assistant' : 'You'}</b>
+                              <p>{message.body}</p>
+                              <small>{new Date(message.created_at).toLocaleString()}</small>
+                            </article>
+                          ))}
+                          {supportChatMessages.length === 0 ? <p className="mailbox-empty">No messages in this chat yet.</p> : null}
+                        </div>
+                        {canReplyToSelectedSupportChat ? (
+                          <div className="live-chat-reply">
+                            <label className="support-field">Reply to customer<textarea maxLength={2000} value={supportChatDraft} onChange={(event) => setSupportChatDraft(event.target.value)} placeholder="Write a reply" /></label>
+                            <div className="review-actions">
+                              <button className="button button-primary" disabled={supportChatSending || !supportChatDraft.trim()} onClick={() => void sendSupportChatReply()}>
+                                {supportChatSending ? 'Sending…' : 'Send reply'}
+                              </button>
+                            </div>
+                          </div>
+                        ) : selectedSupportChat.assigned_staff_id ? (
+                          <p className="mailbox-empty">This chat is assigned to another support teammate.</p>
+                        ) : null}
+                      </>
+                    ) : <p className="mailbox-empty">Select an open chat to read and reply.</p>}
+                  </div>
+                </div>
+              </section>
+              <section className="panel">
+                <div className="section-heading">
+                  <div><h2>Customer email</h2><p>Shared inbox: support@getbuy.com.ng · Replies are sent from this address.</p></div>
+                  <button className="button button-outline" disabled={supportEmailLoading} onClick={() => void loadSupportMailbox()}>{supportEmailLoading ? 'Refreshing…' : 'Refresh inbox'}</button>
+                </div>
+                {supportEmailError ? <div className="alert" role="alert">{supportEmailError}</div> : null}
+                {supportEmailNotice ? <div className="success-notice" role="status">{supportEmailNotice}</div> : null}
+                <div className="mailbox-grid">
+                  <div className="mailbox-list" aria-label="Support inbox messages">
+                    {supportEmails.map((message) => (
+                      <button
+                        className={`mailbox-item${selectedSupportEmailUid === message.uid ? ' mailbox-item-selected' : ''}`}
+                        key={message.uid}
+                        aria-pressed={selectedSupportEmailUid === message.uid}
+                        onClick={() => void openSupportEmail(message)}
+                      >
+                        <span className="mailbox-item-top"><b>{message.from}</b>{message.unread ? <span className="mailbox-unread">New</span> : null}</span>
+                        <span className="mailbox-subject">{message.subject}</span>
+                        <span className="mailbox-date">{message.receivedAt ? new Date(message.receivedAt).toLocaleString() : 'Date unavailable'}</span>
+                      </button>
+                    ))}
+                    {!supportEmailLoading && supportEmails.length === 0 ? <p className="mailbox-empty">No emails in the support inbox.</p> : null}
+                    {supportEmailLoading && supportEmails.length === 0 ? <p className="mailbox-empty">Loading inbox…</p> : null}
+                  </div>
+                  <div className="mailbox-detail">
+                    {supportEmailReading ? <p className="mailbox-empty">Loading email…</p> : null}
+                    {!supportEmailReading && selectedSupportEmail ? (
+                      <>
+                        <div className="mailbox-message-heading">
+                          <h3>{selectedSupportEmail.subject}</h3>
+                          <p>From {selectedSupportEmail.from}</p>
+                          <p>{selectedSupportEmail.receivedAt ? new Date(selectedSupportEmail.receivedAt).toLocaleString() : 'Date unavailable'}</p>
+                        </div>
+                        <pre className="mailbox-message-body">{selectedSupportEmail.body}</pre>
+                        {selectedSupportEmail.attachments.length ? (
+                          <div className="mailbox-attachments">
+                            <b>Attachments</b>
+                            <p>{selectedSupportEmail.attachments.join(', ')}</p>
+                            <a href="https://mail.hostinger.com/" target="_blank" rel="noreferrer">Open Hostinger Webmail to download attachments</a>
+                          </div>
+                        ) : null}
+                        <label className="support-field">Reply<textarea maxLength={10000} value={supportEmailReply} onChange={(event) => setSupportEmailReply(event.target.value)} placeholder="Write a reply to the customer" /></label>
+                        <div className="review-actions">
+                          <button className="button button-primary" disabled={supportEmailSending || !supportEmailReply.trim()} onClick={() => void sendSupportEmailReply()}>
+                            {supportEmailSending ? 'Sending…' : 'Send reply'}
+                          </button>
+                        </div>
+                      </>
+                    ) : null}
+                    {!supportEmailReading && !selectedSupportEmail ? <p className="mailbox-empty">Select an email to read and reply.</p> : null}
+                  </div>
+                </div>
               </section>
               <section className="panel">
                 <div className="section-heading"><div><h2>Buyer issue reports</h2><p>Order-linked reports from customers. Replies and status changes appear in the buyer’s order details when they reopen the order.</p></div><Status value={`${supportIssues.filter((issue) => issue.status !== 'resolved').length} open`} /></div>
@@ -917,6 +1452,9 @@ export default function AdminApp() {
                 ))}
                 {filtered.cancellations.length === 0 ? <Empty>{cancellationRequests.length === 0 ? 'No cancellation requests have been submitted.' : 'No requests match your search.'}</Empty> : null}
               </section>
+                </>
+              ) : null}
+              {adminRole !== 'customer_service' ? (
               <section className="panel">
                 <div className="section-heading"><div><h2>Manual refunds</h2><p>Update refund cases after processing them through the payment provider.</p></div><Status value={`${refundRequests.filter((refund) => ['pending_manual', 'processing'].includes(refund.status)).length} open`} /></div>
                 <p className="finance-warning">Complete the refund with the payment provider before selecting “refunded”. Enter the provider reference so the customer and support team can verify it.</p>
@@ -944,6 +1482,7 @@ export default function AdminApp() {
                 })}
                 {filtered.refunds.length === 0 ? <Empty>{refundRequests.length === 0 ? 'No refund cases have been submitted.' : 'No cases match your search.'}</Empty> : null}
               </section>
+              ) : null}
             </>
           ) : null}
           {tab === 'reports' && revenueReport ? (
@@ -984,6 +1523,47 @@ export default function AdminApp() {
                 {activityLog.filter((row) => `${row.actor_name} ${row.action} ${row.entity_type} ${row.entity_id} ${JSON.stringify(row.details)}`.toLowerCase().includes(search.toLowerCase())).map((row) => <tr key={row.id}><td>{new Date(row.created_at).toLocaleString()}</td><td>{row.actor_name}</td><td>{row.action}</td><td>{row.entity_type.replaceAll('_', ' ')}</td><td><code>{row.entity_id.slice(0, 12)}</code></td><td>{Object.entries(row.details).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${String(value)}`).join(' · ') || '—'}</td></tr>)}
               </tbody></table>{activityLog.length === 0 ? <Empty>No administrator actions have been recorded yet.</Empty> : null}</div>
             </section>
+          ) : null}
+          {tab === 'staff' ? (
+            <>
+              <section className="panel">
+                <div className="section-heading"><div><h2>Grant staff access</h2><p>Invite a new team member or assign a role to an existing GetBuy account. Staff use their own email and password.</p></div></div>
+                {staffNotice ? <div className="success-notice" role="status">{staffNotice}</div> : null}
+                <form className="collection-account-form" onSubmit={(event) => {
+                  event.preventDefault();
+                  setBusyId('staff-invite');
+                  void manageStaff({ action: 'invite', email: staffEmail, role: staffRole }).finally(() => setBusyId(''));
+                }}>
+                  <label>Staff email<input type="email" autoComplete="email" maxLength={254} required value={staffEmail} onChange={(event) => setStaffEmail(event.target.value)} placeholder="name@example.com" /></label>
+                  <label>Role<select value={staffRole} onChange={(event) => {
+                    if (isStaffRole(event.target.value)) setStaffRole(event.target.value);
+                  }}>{STAFF_ROLES.map((role) => <option key={role} value={role}>{ADMIN_ROLE_LABELS[role]}</option>)}</select></label>
+                  <button className="button button-primary" disabled={busyId === 'staff-invite'}>{busyId === 'staff-invite' ? 'Saving…' : 'Invite staff member'}</button>
+                </form>
+              </section>
+              <section className="panel">
+                <div className="section-heading"><div><h2>Team access</h2><p>Only super administrators can view and manage staff roles.</p></div><Status value={`${staffMembers.length} staff accounts`} /></div>
+                <div className="table-wrap"><table><thead><tr><th>EMAIL</th><th>ROLE</th><th>ADDED</th><th>ACCESS</th></tr></thead><tbody>
+                  {staffMembers.filter((member) => `${member.email} ${ADMIN_ROLE_LABELS[member.role]}`.toLowerCase().includes(search.toLowerCase())).map((member) => (
+                    <tr key={member.user_id}>
+                      <td><b>{member.email || 'Email unavailable'}</b></td>
+                      <td>{member.role === 'super_admin' ? ADMIN_ROLE_LABELS[member.role] : (
+                        <select aria-label={`Role for ${member.email}`} value={member.role} disabled={busyId === member.user_id} onChange={(event) => {
+                          if (isStaffRole(event.target.value)) updateStaffRole(member, event.target.value);
+                        }}>{STAFF_ROLES.map((role) => <option key={role} value={role}>{ADMIN_ROLE_LABELS[role]}</option>)}</select>
+                      )}</td>
+                      <td>{new Date(member.created_at).toLocaleDateString()}</td>
+                      <td>{member.role === 'super_admin'
+                        ? <Status value="Protected" />
+                        : <button className="button button-danger" disabled={busyId === member.user_id} onClick={() => revokeStaffAccess(member)}>Revoke access</button>}</td>
+                    </tr>
+                  ))}
+                </tbody></table>
+                  {staffMembers.length === 0 ? <Empty>{loading ? 'Loading staff access…' : 'No staff memberships are configured.'}</Empty> : null}
+                  {staffMembers.length > 0 && staffMembers.filter((member) => `${member.email} ${ADMIN_ROLE_LABELS[member.role]}`.toLowerCase().includes(search.toLowerCase())).length === 0 ? <Empty>No staff members match your search.</Empty> : null}
+                </div>
+              </section>
+            </>
           ) : null}
           {tab === 'payouts' ? (
             <>
@@ -1065,16 +1645,16 @@ function Login({
         <a className="brand login-brand" href="#"><img className="brand-logo" src={getBuyLogo} alt="GetBuy" /><span className="brand-light">admin</span></a>
         <p className="eyebrow">PRIVATE OPERATIONS PORTAL</p>
         <h1>Welcome back</h1>
-        <p className="muted">Sign in with your GetBuy administrator account.</p>
+        <p className="muted">Sign in with the individual GetBuy account assigned to your staff role.</p>
         {error ? <div className="alert" role="alert">{error}</div> : null}
         {canSubmit ? (
           <form onSubmit={onSubmit}>
-            <label>Email address<input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail?.(event.target.value)} placeholder="admin@example.com" /></label>
+            <label>Email address<input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail?.(event.target.value)} placeholder="name@example.com" /></label>
             <label>Password<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword?.(event.target.value)} placeholder="Your password" /></label>
             <button className="button button-primary login-submit" disabled={loading}>{loading ? 'Signing in…' : 'Sign in securely'}</button>
           </form>
         ) : null}
-        <p className="login-footnote">GETBUY POWERED BY STRATOS LIMITED.<br />Access is limited to accounts granted the administrator role.</p>
+        <p className="login-footnote">GETBUY POWERED BY STRATOS LIMITED.<br />Access is limited to staff accounts with an assigned role.</p>
       </section>
     </main>
   );

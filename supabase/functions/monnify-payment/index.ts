@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createServerErrorId, logServerError } from '../_shared/server-errors.ts';
 import {
   createAdminClient,
   getAccessToken,
@@ -242,7 +243,8 @@ Deno.serve(async (request) => {
     }
     return respond({ error: 'A valid payment action is required.' }, 400);
   } catch (error) {
-    console.error('Monnify payment request failed.', error);
-    return respond({ error: error instanceof Error ? error.message : 'Monnify payment request failed.' }, 400);
+    const errorId = createServerErrorId();
+    logServerError(errorId, 'monnify-payment', error);
+    return respond({ error: 'Unable to process this payment. Please try again.', error_id: errorId }, 500);
   }
 });

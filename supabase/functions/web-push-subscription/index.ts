@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createServerErrorId, logServerError } from '../_shared/server-errors.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -105,7 +106,8 @@ Deno.serve(async (request) => {
     if (saveError) throw saveError;
     return respond({ subscribed: true });
   } catch (error) {
-    console.error('Unable to update the browser push subscription.', error);
-    return respond({ error: 'Unable to save browser push settings.' }, 500);
+    const errorId = createServerErrorId();
+    logServerError(errorId, 'web-push-subscription', error);
+    return respond({ error: 'Unable to save browser alert settings. Please try again.', error_id: errorId }, 500);
   }
 });

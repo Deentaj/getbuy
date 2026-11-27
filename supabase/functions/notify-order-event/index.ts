@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createServerErrorId, logServerError } from '../_shared/server-errors.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -396,7 +397,8 @@ Deno.serve(async (request) => {
 
     return respond({ sent });
   } catch (error) {
-    console.error('Unable to dispatch order notifications.', error);
-    return respond({ error: 'Unable to dispatch order notifications.' }, 500);
+    const errorId = createServerErrorId();
+    logServerError(errorId, 'notify-order-event', error);
+    return respond({ error: 'Unable to dispatch this notification. Please try again.', error_id: errorId }, 500);
   }
 });

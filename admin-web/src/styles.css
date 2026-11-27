@@ -108,6 +108,7 @@ td code{color:#536b5f;font-size:10px}
 .collection-account-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:end;gap:10px}
 .collection-account-form label{display:grid;gap:6px;color:#344a64;font-size:10px;font-weight:700}
 .collection-account-form input{height:36px;padding:0 10px;border:1px solid #dce4ed;border-radius:8px;outline:none;color:#1c3554;font-size:11px}
+.collection-account-form select,td select{height:36px;padding:0 10px;border:1px solid #dce4ed;border-radius:8px;background:#fff;color:#1c3554;font-size:11px}
 .collection-account-form input:focus{border-color:#4380bd;box-shadow:0 0 0 3px #4380bd20}
 .collection-account-form .button{min-height:36px}
 .button{min-height:35px;padding:0 13px;border:1px solid transparent;border-radius:8px;font-size:11px;font-weight:800}
@@ -340,6 +341,51 @@ td small{color:#95a1af}
 .review-card-heading p,.review-detail{color:#718197}
 .document{border-color:#e2e8ef;color:#425b77}
 .document small{color:#2362a4}
+
+.live-chat-grid{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(0,1.5fr);min-height:300px;border:1px solid #e4eaf1;border-radius:10px;overflow:hidden}
+.live-chat-list{max-height:620px;overflow-y:auto;border-right:1px solid #e4eaf1;background:#fbfcfe}
+.live-chat-item{width:100%;display:grid;gap:7px;padding:13px;border:0;border-bottom:1px solid #e8edf3;background:transparent;color:#53657b;text-align:left}
+.live-chat-item:hover,.live-chat-item-selected{background:#edf5ff}
+.live-chat-item-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.live-chat-item-heading b{color:#253d59;font-size:11px}
+.live-chat-item-heading span,.live-chat-item small{color:#8391a2;font-size:10px}
+.live-chat-item small{line-height:1.5}
+.live-chat-detail{min-width:0;padding:14px}
+.live-chat-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.live-chat-heading h3{margin:0 0 4px;color:#1e395b;font-size:14px}
+.live-chat-heading p{margin:0;color:#718197;font-size:11px}
+.live-chat-feed{display:flex;flex-direction:column;gap:9px;min-height:180px;max-height:440px;margin-top:12px;padding:12px;overflow-y:auto;border:1px solid #e4eaf1;border-radius:9px;background:#fbfcfe}
+.live-chat-message{max-width:86%;align-self:flex-start;padding:10px 12px;border:1px solid #e4eaf1;border-radius:10px;background:#fff}
+.live-chat-message-staff{align-self:flex-end;background:#eaf3ff;border-color:#d6e7fb}
+.live-chat-message-customer{background:#f3f8f2;border-color:#dcebdd}
+.live-chat-message b{color:#40566f;font-size:10px}
+.live-chat-message p{margin:5px 0;color:#344b65;font-size:12px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.live-chat-message small{color:#8997a7;font-size:9px}
+.live-chat-reply{margin-top:12px}
+.live-chat-reply .support-field{display:block;color:#54677d;font-size:11px;font-weight:700}
+.live-chat-reply textarea{width:100%;min-height:78px;margin-top:7px;padding:10px;border:1px solid #dfe6ef;border-radius:8px;resize:vertical;color:#253d59;font-size:12px}
+
+@media(max-width:760px){.live-chat-grid{grid-template-columns:1fr}.live-chat-list{max-height:240px;border-right:0;border-bottom:1px solid #e4eaf1}.live-chat-detail{padding:11px}.live-chat-heading{flex-direction:column}.live-chat-message{max-width:94%}}
+
+.mailbox-grid{display:grid;grid-template-columns:minmax(220px,0.8fr) minmax(0,1.5fr);min-height:230px;border:1px solid #e4eaf1;border-radius:10px;overflow:hidden}
+.mailbox-list{max-height:520px;overflow-y:auto;border-right:1px solid #e4eaf1;background:#fbfcfe}
+.mailbox-item{width:100%;display:grid;gap:6px;padding:12px;border:0;border-bottom:1px solid #e8edf3;background:transparent;color:#52657c;text-align:left}
+.mailbox-item:hover,.mailbox-item-selected{background:#edf4fb}
+.mailbox-item-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.mailbox-item-top b,.mailbox-subject{overflow:hidden;color:#263d59;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.mailbox-item-top b{font-weight:700}
+.mailbox-unread{flex:0 0 auto;padding:3px 6px;border-radius:10px;background:#e4f5ec;color:#16724e;font-size:9px;font-weight:800}
+.mailbox-date{color:#8492a2;font-size:10px}
+.mailbox-detail{min-width:0;padding:16px}
+.mailbox-message-heading h3{margin:0 0 7px;color:#1c3554;font-size:15px}
+.mailbox-message-heading p,.mailbox-empty{margin:0 0 6px;color:#718197;font-size:11px;line-height:1.55}
+.mailbox-message-body{max-height:360px;overflow:auto;margin:15px 0;padding:12px;border:1px solid #e4eaf1;border-radius:8px;background:#fbfcfe;color:#344a64;font-family:inherit;font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+.mailbox-attachments{margin-top:12px;color:#52657c;font-size:11px}
+.mailbox-attachments p{margin:5px 0}
+.mailbox-attachments a{font-size:10px}
+.mailbox-list .mailbox-empty{padding:14px}
+
+@media(max-width:760px){.mailbox-grid{grid-template-columns:1fr}.mailbox-list{max-height:260px;border-right:0;border-bottom:1px solid #e4eaf1}.mailbox-detail{padding:12px}.mailbox-message-body{max-height:300px}}
 .payout-transfer-row input,.collection-account-form input,.login-card input{border-color:#dce4ed;color:#1c3554}
 .payout-transfer-row input:focus,.collection-account-form input:focus,.login-card input:focus{border-color:#4380bd;box-shadow:0 0 0 3px #4380bd20}
 .collection-account-form label,.login-card label{color:#344a64}

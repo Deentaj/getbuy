@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createServerErrorId, logServerError } from '../_shared/server-errors.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -148,7 +149,8 @@ Deno.serve(async (request) => {
 
     return respond({ session: data.session });
   } catch (error) {
-    console.error('Account sign-in request failed.', error);
-    return respond({ error: error instanceof Error ? error.message : 'Unable to sign in.' }, 500);
+    const errorId = createServerErrorId();
+    logServerError(errorId, 'account-login', error);
+    return respond({ error: 'Unable to sign in. Please try again.', error_id: errorId }, 500);
   }
 });
