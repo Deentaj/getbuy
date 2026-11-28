@@ -11,6 +11,7 @@ import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { supabase } from './lib/supabase';
 import { createServerReportedError, formatErrorForUser, type ClientErrorReport } from './lib/errorReporting';
+import { PRIVACY_POLICY_LAST_UPDATED, PRIVACY_POLICY_SECTIONS } from './legal/privacy';
 import { TERMS_LAST_UPDATED, TERMS_SECTIONS } from './legal/terms';
 import { decodeAndValidateImage } from './supabase/functions/_shared/image-validation';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
@@ -267,6 +268,8 @@ type Screen =
   | 'notifications'
   | 'support'
   | 'terms'
+  | 'privacy'
+  | 'ninVerificationSuccess'
   | 'bulkProducts'
   | 'addProduct';
 type AppNavigationState = {
@@ -1142,6 +1145,7 @@ function AppContent() {
   const [isGuestBrowsing, setIsGuestBrowsing] = useState(false);
   const [hasRegisteredAccount, setHasRegisteredAccount] = useState(false);
   const [termsReturnScreen, setTermsReturnScreen] = useState<Screen>('welcome');
+  const [privacyReturnScreen, setPrivacyReturnScreen] = useState<Screen>('welcome');
   const [rememberLogin, setRememberLogin] = useState(false);
   const [name, setName] = useState('');
   const [firstName, setFirstName] = useState('');
@@ -1479,7 +1483,7 @@ function AppContent() {
       await verifyNinIdentity(ninNumber);
       setNinNumber('');
       setNinConsent(false);
-      setScreen(pendingNinNextScreen);
+      setScreen('ninVerificationSuccess');
     } catch (error: unknown) {
       setAuthError(getErrorMessage(error, 'NIN verification is temporarily unavailable. Please try again.'));
     } finally {
@@ -2113,6 +2117,8 @@ function AppContent() {
             await verifyNinIdentity(ninNumber);
             setNinNumber('');
             setNinConsent(false);
+            setScreen('ninVerificationSuccess');
+            return;
           } catch (error: unknown) {
             setAuthError(getErrorMessage(error, 'NIN verification is temporarily unavailable. Please try again.'));
             return;
@@ -4158,6 +4164,8 @@ function AppContent() {
           await verifyNinIdentity(ninNumber);
           setNinNumber('');
           setNinConsent(false);
+          setScreen('ninVerificationSuccess');
+          return;
         }
         await routeAuthenticatedAccount(data.session.user.id, createdRole, nextScreen);
       }
@@ -4207,6 +4215,8 @@ function AppContent() {
           await verifyNinIdentity(ninNumber);
           setNinNumber('');
           setNinConsent(false);
+          setScreen('ninVerificationSuccess');
+          return;
         }
         await routeAuthenticatedAccount(data.session.user.id, createdRole, nextScreen);
       }
@@ -5848,6 +5858,11 @@ function AppContent() {
     setScreen('terms');
   };
 
+  const openPrivacyPolicy = (returnScreen: Screen) => {
+    setPrivacyReturnScreen(returnScreen);
+    setScreen('privacy');
+  };
+
   const beginAccountCreation = () => {
     setHasAcceptedTerms(false);
     setNinNumber('');
@@ -5859,6 +5874,7 @@ function AppContent() {
   const goBack = () => {
     if (screen === 'welcome') return;
     if (screen === 'terms') setScreen(termsReturnScreen);
+    else if (screen === 'privacy') setScreen(privacyReturnScreen);
     else if (screen === 'auth') setScreen('welcome');
     else if (screen === 'verifySignup') {
       setAuthError('');
@@ -5928,8 +5944,54 @@ function AppContent() {
             ))}
           </View>
         ))}
-        <Text style={styles.termsReviewNote}>These terms are a working draft and should be reviewed by Nigerian legal counsel before public launch.</Text>
+        <Text style={styles.termsIntro}>
+          Read our{' '}
+          <Text accessibilityRole="link" onPress={() => openPrivacyPolicy('terms')} style={styles.termsLink}>Privacy Policy</Text>
+          {' '}for details about personal information.
+        </Text>
+        <Text style={styles.termsReviewNote}>These terms do not limit any rights you have under applicable law.</Text>
       </Shell>
+    );
+  }
+
+  if (screen === 'privacy') {
+    return (
+      <Shell>
+        <BackButton onPress={goBack} />
+        <Text style={styles.pageTitleLeft}>Privacy Policy</Text>
+        <Text style={styles.pageDescriptionLeft}>Last updated {PRIVACY_POLICY_LAST_UPDATED}</Text>
+        <Text style={styles.termsIntro}>This notice explains how GetBuy handles personal information when you use the app and related services.</Text>
+        {PRIVACY_POLICY_SECTIONS.map((section) => (
+          <View key={section.title} style={styles.termsSection}>
+            <Text style={styles.termsSectionTitle}>{section.title}</Text>
+            {section.paragraphs.map((paragraph) => (
+              <Text key={paragraph} style={styles.termsSectionText}>{paragraph}</Text>
+            ))}
+          </View>
+        ))}
+        <Text style={styles.termsIntro}>
+          See also our{' '}
+          <Text accessibilityRole="link" onPress={() => openTerms('privacy')} style={styles.termsLink}>Terms and Conditions</Text>.
+        </Text>
+      </Shell>
+    );
+  }
+
+  if (screen === 'ninVerificationSuccess') {
+    const accountType = role === 'delivery' ? 'rider' : 'seller';
+    return (
+      <FormShell title="" description="" onBack={() => setScreen(pendingNinNextScreen)} hideHeader>
+        <View style={styles.centerContent}>
+          <View style={styles.successMark}>
+            <Ionicons color="#16804A" name="checkmark" size={42} />
+          </View>
+          <Text style={styles.pageTitle}>NIN verification successful</Text>
+          <Text style={styles.pageDescription}>
+            The name returned for your NIN matched your GetBuy profile. You can now continue to your {accountType} account.
+          </Text>
+          <PrimaryButton label="Continue to account" onPress={() => setScreen(pendingNinNextScreen)} />
+        </View>
+      </FormShell>
     );
   }
 
@@ -5972,6 +6034,12 @@ function AppContent() {
               </Pressable>
             </>
           )}
+          <Text style={styles.terms}>
+            View the{' '}
+            <Text accessibilityRole="link" onPress={() => openTerms('welcome')} style={styles.termsLink}>Terms and Conditions</Text>
+            {' '}and{' '}
+            <Text accessibilityRole="link" onPress={() => openPrivacyPolicy('welcome')} style={styles.termsLink}>Privacy Policy</Text>.
+          </Text>
         </View>
       </Shell>
     );
@@ -7523,6 +7591,11 @@ function AppContent() {
               </View>
               <Text style={styles.termsAgreementLabel}>I consent to GetBuy sending my NIN to Prembly for identity verification.</Text>
             </Pressable>
+            <Text style={styles.formHint}>
+              Read the{' '}
+              <Text accessibilityRole="link" onPress={() => openPrivacyPolicy('create')} style={styles.termsLink}>Privacy Policy</Text>
+              {' '}for details about NIN processing.
+            </Text>
           </>
         ) : null}
         <Field label="Password" value={password} onChangeText={setPassword} placeholder="••••••••••" secureTextEntry={!showPassword} />
@@ -7539,7 +7612,10 @@ function AppContent() {
         <Text style={styles.formHint}>Use at least 8 characters. You can reveal it to check.</Text>
         <Text style={styles.accountTerms}>
           Your account is used to manage your orders and account details. Review the{' '}
-          <Text accessibilityRole="link" onPress={() => openTerms('create')} style={styles.termsLink}>Terms and Conditions</Text> before continuing.
+          <Text accessibilityRole="link" onPress={() => openTerms('create')} style={styles.termsLink}>Terms and Conditions</Text>
+          {' '}and{' '}
+          <Text accessibilityRole="link" onPress={() => openPrivacyPolicy('create')} style={styles.termsLink}>Privacy Policy</Text>
+          {' '}before continuing.
         </Text>
         <Pressable
           accessibilityRole="checkbox"
@@ -7817,6 +7893,11 @@ function AppContent() {
           </View>
           <Text style={styles.termsAgreementLabel}>I consent to GetBuy sending my NIN to Prembly for identity verification.</Text>
         </Pressable>
+        <Text style={styles.formHint}>
+          Read the{' '}
+          <Text accessibilityRole="link" onPress={() => openPrivacyPolicy('ninVerification')} style={styles.termsLink}>Privacy Policy</Text>
+          {' '}for details about NIN processing.
+        </Text>
         {authError ? <Text style={styles.authError}>{authError}</Text> : null}
         <PrimaryButton
           label={isSubmittingNin || isSubmittingAuth ? 'Verifying NIN…' : 'Verify NIN and continue'}

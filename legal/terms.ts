@@ -1,4 +1,4 @@
-export const TERMS_LAST_UPDATED = '10 November 2026';
+export const TERMS_LAST_UPDATED = '28 November 2026';
 
 export const TERMS_SECTIONS = [
   {
@@ -38,6 +38,7 @@ export const TERMS_SECTIONS = [
     paragraphs: [
       'Sellers must keep their listings, prices, stock, and store details accurate; handle accepted orders responsibly; and follow applicable food-safety, consumer-protection, tax, and other legal requirements.',
       'Delivery partners should follow the assignment and delivery instructions in the app, protect order information, and provide truthful delivery updates and proof when requested.',
+      'Seller and delivery-partner (rider) accounts must pass NIN verification before the role can be accessed. With your explicit consent, GetBuy sends the NIN you enter to Prembly and compares the returned name with the legal name on your GetBuy profile. GetBuy does not store your NIN number or the identity record returned by Prembly, but it does retain the verification result and relevant consent and verification timestamps. If the check fails or the names do not match, you cannot continue into the seller or rider account until verification succeeds. See the Privacy Policy for details.',
       'GetBuy may pause listings, orders, or account features to investigate safety, payment, quality, or policy concerns. This does not remove any rights or obligations imposed by applicable law.',
     ],
   },
@@ -59,8 +60,9 @@ export const TERMS_SECTIONS = [
     title: '8. Privacy and personal information',
     paragraphs: [
       'GetBuy uses account, contact, order, and delivery information to operate the marketplace, provide support, and protect users. Information needed to fulfil an order may be shared with its seller or assigned delivery partner.',
+      'Support chat messages are stored so you and authorized customer-service staff can follow the conversation. The in-chat FAQ helper uses curated, rule-based answers and is not a general generative-AI service.',
       'If you enable browser alerts, GetBuy stores your browser push subscription to deliver notifications. You can turn browser alerts off from Notifications; push providers handle delivery to your browser.',
-      'These terms do not replace the GetBuy Privacy Policy. Before public launch, publish a separate privacy notice explaining the personal information collected, purposes, lawful basis, retention, sharing, and how users can exercise their rights under applicable data-protection law.',
+      'The separate GetBuy Privacy Policy explains the information we handle, why we use it, when it is shared, how long it may be kept, and how you can exercise your rights under applicable data-protection law.',
     ],
   },
   {
