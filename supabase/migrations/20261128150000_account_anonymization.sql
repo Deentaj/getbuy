@@ -161,9 +161,7 @@ begin
   set name = 'Deleted seller store',
       market_area = '',
       pickup_details = '',
-      description = '',
-      storefront_photo_path = null,
-      seller_id_path = null
+      description = ''
   where id = any(seller_store_ids);
 
   update public.products
