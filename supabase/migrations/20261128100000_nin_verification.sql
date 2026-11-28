@@ -94,13 +94,6 @@ begin
       where id = old.id;
       perform set_config('app.allow_nin_role_change', coalesce(previous_role_change_setting, ''), true);
     end if;
-    if new.role in ('seller', 'delivery') then
-      perform set_config('app.allow_nin_role_change', 'on', true);
-      update public.profiles
-      set role = 'buyer'
-      where id = old.id;
-      perform set_config('app.allow_nin_role_change', coalesce(previous_role_change_setting, ''), true);
-    end if;
   elsif new.role is distinct from old.role and not exists (
     select 1
     from public.nin_verifications

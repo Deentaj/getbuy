@@ -1,5 +1,9 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { isValidNin, matchesNinProfileName } from '../_shared/nin-verification.ts';
+import {
+  extractPremblyNinIdentity,
+  isValidNin,
+  matchesNinProfileName,
+} from '../_shared/nin-verification.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -7,7 +11,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 const MAX_BODY_BYTES = 1024;
-const allowedDojahHosts = new Set(['api.dojah.io', 'sandbox.dojah.io']);
+const PREMBLY_NIN_BASIC_URL = 'https://api.prembly.com/api/v1/verification/api/nin_basic/';
 
 function respond(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -54,22 +58,8 @@ Deno.serve(async (request) => {
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-  const dojahAppId = Deno.env.get('DOJAH_APP_ID');
-  const dojahSecretKey = Deno.env.get('DOJAH_SECRET_KEY');
-  const dojahBaseUrl = Deno.env.get('DOJAH_API_BASE_URL') || 'https://api.dojah.io';
-  let dojahHost: string;
-  try {
-    const parsedDojahUrl = new URL(dojahBaseUrl);
-    if (parsedDojahUrl.protocol !== 'https:' || !allowedDojahHosts.has(parsedDojahUrl.hostname)) {
-      throw new Error('Dojah API host is not allowed.');
-    }
-    dojahHost = parsedDojahUrl.origin;
-  } catch {
-    const errorId = crypto.randomUUID();
-    logSafeFailure(errorId, 'verify-nin.config');
-    return respond({ error: 'NIN verification is temporarily unavailable.', error_id: errorId }, 503);
-  }
-  if (!supabaseUrl || !anonKey || !serviceRoleKey || !dojahAppId || !dojahSecretKey) {
+  const premblyApiKey = Deno.env.get('PREMBLY_API_KEY');
+  if (!supabaseUrl || !anonKey || !serviceRoleKey || !premblyApiKey) {
     const errorId = crypto.randomUUID();
     logSafeFailure(errorId, 'verify-nin.config');
     return respond({ error: 'NIN verification is temporarily unavailable.', error_id: errorId }, 503);
@@ -153,27 +143,32 @@ Deno.serve(async (request) => {
   };
 
   try {
-    const dojahUrl = new URL('/api/v1/kyc/nin', dojahHost);
-    dojahUrl.searchParams.set('nin', payload.nin);
-    const response = await fetch(dojahUrl, {
-      method: 'GET',
+    const response = await fetch(PREMBLY_NIN_BASIC_URL, {
+      method: 'POST',
       headers: {
-        Authorization: dojahSecretKey,
-        AppId: dojahAppId,
+        'Content-Type': 'application/json',
+        'X-API-Key': premblyApiKey,
       },
+      body: JSON.stringify({ number: payload.nin }),
       signal: AbortSignal.timeout(10000),
     });
-    if (response.status === 404) {
+    if (!response.ok) throw new Error(`Prembly responded with status ${response.status}.`);
+
+    const result = await response.json() as { response_code?: unknown };
+    const responseCode = typeof result.response_code === 'string'
+      ? result.response_code.trim()
+      : typeof result.response_code === 'number'
+        ? String(result.response_code)
+        : '';
+    if (responseCode === '01') {
       await setVerificationFailed();
       return respond({ error: 'The NIN could not be verified against your profile details.' }, 422);
     }
-    if (!response.ok) throw new Error(`Dojah responded with status ${response.status}.`);
+    if (responseCode !== '00') throw new Error('Prembly returned a non-success response code.');
 
-    const result = await response.json() as { entity?: unknown };
-    const entity = typeof result.entity === 'object' && result.entity !== null
-      ? result.entity as { first_name?: unknown; middle_name?: unknown; last_name?: unknown }
-      : null;
-    if (!entity || !matchesNinProfileName(profile.full_name || '', entity)) {
+    const identity = extractPremblyNinIdentity(result);
+    if (!identity) throw new Error('Prembly response is missing the required name fields.');
+    if (!matchesNinProfileName(profile.full_name || '', identity)) {
       await setVerificationFailed();
       return respond({ error: 'The NIN could not be verified against your profile details.' }, 422);
     }

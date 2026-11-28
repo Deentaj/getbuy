@@ -1,8 +1,37 @@
-type DojahNinEntity = {
+type NinIdentityNames = {
   first_name?: unknown;
   middle_name?: unknown;
   last_name?: unknown;
 };
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function firstString(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
+}
+
+export function extractPremblyNinIdentity(response: unknown): NinIdentityNames | null {
+  const data = asRecord(asRecord(response)?.data);
+  if (!data) return null;
+
+  const firstName = firstString(data, ['firstname', 'first_name', 'firstName']);
+  const lastName = firstString(data, ['surname', 'last_name', 'lastname', 'lastName']);
+  if (!firstName || !lastName) return null;
+
+  return {
+    first_name: firstName,
+    middle_name: firstString(data, ['middlename', 'middle_name', 'middleName', 'otherName']),
+    last_name: lastName,
+  };
+}
 
 function nameTokens(value: string) {
   return value
@@ -19,7 +48,7 @@ export function isValidNin(value: unknown): value is string {
   return typeof value === 'string' && /^\d{11}$/.test(value);
 }
 
-export function matchesNinProfileName(profileName: string, entity: DojahNinEntity) {
+export function matchesNinProfileName(profileName: string, entity: NinIdentityNames) {
   if (
     typeof entity.first_name !== 'string'
     || typeof entity.last_name !== 'string'

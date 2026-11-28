@@ -7509,7 +7509,7 @@ function AppContent() {
               secureTextEntry
             />
             <Text style={styles.formHint}>
-              Required for {role === 'delivery' ? 'rider' : 'seller'} signup. GetBuy sends your NIN to Dojah for verification against your account name and does not store your NIN or the returned identity record.
+              Required for {role === 'delivery' ? 'rider' : 'seller'} signup. GetBuy sends your NIN to Prembly for verification against your account name and does not store your NIN or the returned identity record.
             </Text>
             <Pressable
               accessibilityRole="checkbox"
@@ -7521,7 +7521,7 @@ function AppContent() {
               <View style={[styles.rememberLoginCheckbox, ninConsent && styles.rememberLoginCheckboxSelected]}>
                 {ninConsent ? <Ionicons color="#FFF" name="checkmark" size={14} /> : null}
               </View>
-              <Text style={styles.termsAgreementLabel}>I consent to GetBuy sending my NIN to Dojah for identity verification.</Text>
+              <Text style={styles.termsAgreementLabel}>I consent to GetBuy sending my NIN to Prembly for identity verification.</Text>
             </Pressable>
           </>
         ) : null}
@@ -7803,7 +7803,7 @@ function AppContent() {
           />
         </View>
         <Text style={styles.formHint}>
-          GetBuy sends your NIN to Dojah for verification against your account name. GetBuy does not store your NIN or the identity record returned by Dojah.
+          GetBuy sends your NIN to Prembly for verification against your account name. GetBuy does not store your NIN or the identity record returned by Prembly.
         </Text>
         <Pressable
           accessibilityRole="checkbox"
@@ -7815,7 +7815,7 @@ function AppContent() {
           <View style={[styles.rememberLoginCheckbox, ninConsent && styles.rememberLoginCheckboxSelected]}>
             {ninConsent ? <Ionicons color="#FFF" name="checkmark" size={14} /> : null}
           </View>
-          <Text style={styles.termsAgreementLabel}>I consent to GetBuy sending my NIN to Dojah for identity verification.</Text>
+          <Text style={styles.termsAgreementLabel}>I consent to GetBuy sending my NIN to Prembly for identity verification.</Text>
         </Pressable>
         {authError ? <Text style={styles.authError}>{authError}</Text> : null}
         <PrimaryButton

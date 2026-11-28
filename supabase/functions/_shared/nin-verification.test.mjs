@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isValidNin, matchesNinProfileName } from './nin-verification.ts';
+import {
+  extractPremblyNinIdentity,
+  isValidNin,
+  matchesNinProfileName,
+} from './nin-verification.ts';
 
 test('accepts only an 11-digit NIN', () => {
   assert.equal(isValidNin('12345678901'), true);
@@ -15,6 +19,31 @@ test('matches ordered account names and accepts a matching middle initial', () =
     middle_name: 'Oluwatobi',
     last_name: 'Okafor',
   }), true);
+});
+
+test('extracts names from Prembly NIN Basic data', () => {
+  assert.deepEqual(extractPremblyNinIdentity({
+    data: {
+      firstname: 'Ada',
+      middlename: 'Oluwatobi',
+      surname: 'Okafor',
+    },
+  }), {
+    first_name: 'Ada',
+    middle_name: 'Oluwatobi',
+    last_name: 'Okafor',
+  });
+  assert.deepEqual(extractPremblyNinIdentity({
+    data: {
+      first_name: 'Ada',
+      lastName: 'Okafor',
+    },
+  }), {
+    first_name: 'Ada',
+    middle_name: undefined,
+    last_name: 'Okafor',
+  });
+  assert.equal(extractPremblyNinIdentity({ data: { firstname: 'Ada' } }), null);
 });
 
 test('rejects mismatched or incomplete identity names', () => {
