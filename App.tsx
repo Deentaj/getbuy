@@ -1335,6 +1335,10 @@ function AppContent() {
   const [isSavingLocation, setIsSavingLocation] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [isDeleteConfirmationVisible, setIsDeleteConfirmationVisible] = useState(false);
+  const [isAccountDeletionComplete, setIsAccountDeletionComplete] = useState(false);
+  const [accountDeletionMessage, setAccountDeletionMessage] = useState('');
   const passwordShake = useRef(new Animated.Value(0)).current;
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const [isSubmittingNin, setIsSubmittingNin] = useState(false);
@@ -3279,6 +3283,46 @@ function AppContent() {
     };
   }, [isHydrated, isSupabaseConfigured, role, screen, selectedOrder?.id, selectedOrder?.status]);
 
+  const clearSignedInState = (accountDeleted = false) => {
+    setRole(null);
+    setCurrentUserId(null);
+    setNotifications([]);
+    setName('');
+    setFirstName('');
+    setSurname('');
+    setPayoutHistory([]);
+    setPayoutBankName('');
+    setPayoutAccountName('');
+    setPayoutAccountNumber('');
+    setCollectionAccount(null);
+    setProfilePhotoPath(null);
+    setProfilePhotoVersion(0);
+    setEmail('');
+    setNinNumber('');
+    setNinConsent(false);
+    setLocation('');
+    setArea('');
+    setDirections('');
+    setStoreName('');
+    setStoreCategory('');
+    setStoreArea('');
+    setPickupDetails('');
+    setStoreDescription('');
+    setServiceArea('');
+    setVehicle('');
+    setSaved([]);
+    setCart([]);
+    setSelectedCartKeys(new Set());
+    setOrders([]);
+    setInventory([]);
+    setSellerOrders([]);
+    setIsEditingProfile(false);
+    setAuthError('');
+    setBiometricEnabled(false);
+    if (accountDeleted) setHasRegisteredAccount(false);
+    setScreen(accountDeleted || !hasRegisteredAccount ? 'welcome' : 'signin');
+  };
+
   const handleSignOut = async () => {
     try {
       await AsyncStorage.removeItem('getbuy-state');
@@ -3314,41 +3358,85 @@ function AppContent() {
     } catch (error: unknown) {
       setDashboardNotice(getErrorMessage(error, 'Unable to sign out completely.'));
     }
-    setRole(null);
-    setCurrentUserId(null);
-    setNotifications([]);
-    setName('');
-    setFirstName('');
-    setSurname('');
-    setPayoutHistory([]);
-    setPayoutBankName('');
-    setPayoutAccountName('');
-    setPayoutAccountNumber('');
-    setCollectionAccount(null);
-    setProfilePhotoPath(null);
-    setProfilePhotoVersion(0);
-    setEmail('');
-    setNinNumber('');
-    setNinConsent(false);
-    setLocation('');
-    setArea('');
-    setDirections('');
-    setStoreName('');
-    setStoreCategory('');
-    setStoreArea('');
-    setPickupDetails('');
-    setStoreDescription('');
-    setServiceArea('');
-    setVehicle('');
-    setSaved([]);
-    setCart([]);
-    setSelectedCartKeys(new Set());
-    setOrders([]);
-    setInventory([]);
-    setSellerOrders([]);
-    setIsEditingProfile(false);
-    setBiometricEnabled(false);
-    setScreen(hasRegisteredAccount ? 'signin' : 'welcome');
+    clearSignedInState();
+  };
+
+  const deleteMyAccount = async () => {
+    setAuthError('');
+    if (!isSupabaseConfigured) {
+      setAuthError('Account deletion requires a secure connection to GetBuy.');
+      return;
+    }
+
+    setIsDeletingAccount(true);
+    try {
+      const { data, error } = await supabase.functions.invoke<{
+        deleted?: boolean;
+        cleanupPending?: boolean;
+        message?: string;
+      }>('delete-account', { body: { confirm: true } });
+      let partialDeletionMessage = '';
+      if (error) {
+        let message = getErrorMessage(error, 'Unable to delete your account.');
+        const context = typeof error === 'object' && error !== null && 'context' in error
+          ? (error as { context?: unknown }).context
+          : null;
+        if (context instanceof Response) {
+          try {
+            const responseBody = await context.clone().json() as {
+              error?: unknown;
+              accountAnonymized?: unknown;
+              signInDisabled?: unknown;
+            };
+            if (typeof responseBody.error === 'string') message = responseBody.error;
+            if (responseBody.accountAnonymized === true) {
+              partialDeletionMessage = `${message} ${responseBody.signInDisabled === true
+                ? 'Sign-in has been disabled while support completes the deletion.'
+                : 'Do not sign in again until support confirms deletion.'}`;
+            }
+          } catch {
+            message = getErrorMessage(error, 'Unable to delete your account.');
+          }
+        }
+        if (!partialDeletionMessage) throw new Error(message);
+      }
+      if (!partialDeletionMessage && !data?.deleted) throw new Error('The account deletion could not be confirmed. Contact support@getbuy.com.ng before retrying.');
+
+      let cleanupMessage = partialDeletionMessage || (data?.cleanupPending
+        ? data.message || 'Your account was deleted, but some uploaded files need support cleanup.'
+        : 'Your sign-in and personal details have been removed. Necessary order and payment records are retained with an anonymous account reference.');
+      try {
+        await AsyncStorage.removeItem('getbuy-state');
+      } catch (sessionError: unknown) {
+        console.warn('Unable to clear saved app data after account deletion.', sessionError);
+        cleanupMessage = `${cleanupMessage} This device could not clear all saved app data; please remove GetBuy’s saved data or contact support.`;
+      }
+      try {
+        const { error: localSignOutError } = await supabase.auth.signOut({ scope: 'local' });
+        if (localSignOutError) throw localSignOutError;
+      } catch (sessionError: unknown) {
+        console.warn('Unable to clear the local session after account deletion.', sessionError);
+        cleanupMessage = `${cleanupMessage} This device could not clear its saved sign-in session; please remove GetBuy’s saved data or contact support.`;
+      }
+      if (Platform.OS === 'web' && 'serviceWorker' in navigator && 'PushManager' in window) {
+        try {
+          const registration = await navigator.serviceWorker.getRegistration('/');
+          const subscription = await registration?.pushManager.getSubscription();
+          if (subscription && !(await subscription.unsubscribe())) {
+            throw new Error('The browser push subscription could not be removed.');
+          }
+        } catch (pushCleanupError: unknown) {
+          console.warn('Unable to remove the browser push subscription after account deletion.', pushCleanupError);
+          cleanupMessage = `${cleanupMessage} Browser notifications may remain enabled on this device; contact support if they continue.`;
+        }
+      }
+      setAccountDeletionMessage(cleanupMessage);
+      setIsAccountDeletionComplete(true);
+    } catch (error: unknown) {
+      setAuthError(getErrorMessage(error, 'Unable to delete your account. Please try again or contact support@getbuy.com.ng.'));
+    } finally {
+      setIsDeletingAccount(false);
+    }
   };
 
   const saveProfileName = async () => {
@@ -6441,6 +6529,69 @@ function AppContent() {
         <Pressable onPress={handleSignOut} style={styles.profileSignOutButton}>
           <Text style={styles.profileSignOutText}>Sign out of getBuy</Text>
         </Pressable>
+        {currentUserId && role !== 'admin' ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={isDeletingAccount}
+            onPress={() => {
+              setAuthError('');
+              setAccountDeletionMessage('');
+              setIsAccountDeletionComplete(false);
+              setIsDeleteConfirmationVisible(true);
+            }}
+            style={[styles.profileDeleteAccountButton, isDeletingAccount && styles.disabledButton]}
+          >
+            <Text style={styles.profileDeleteAccountText}>Delete my account</Text>
+          </Pressable>
+        ) : null}
+        <Modal
+          animationType="fade"
+          transparent
+          visible={isDeleteConfirmationVisible}
+          onRequestClose={() => {
+            if (!isDeletingAccount && !isAccountDeletionComplete) setIsDeleteConfirmationVisible(false);
+          }}
+        >
+          <View style={styles.accountDeleteModalOverlay}>
+            <View style={styles.accountDeleteModalCard}>
+              <Text style={styles.accountDeleteModalTitle}>{isAccountDeletionComplete ? 'Account deletion' : 'Delete your account?'}</Text>
+              <Text style={styles.accountDeleteModalCopy}>
+                {isAccountDeletionComplete
+                  ? accountDeletionMessage
+                  : 'This is permanent. GetBuy will remove your sign-in and personal details, anonymize your seller listings, and retain only necessary order, payment, delivery, and dispute records. Deletion is blocked while you have active orders or unsettled payouts, remittances, or refunds.'}
+              </Text>
+              {authError ? <Text style={styles.authError}>{authError}</Text> : null}
+              <Pressable
+                accessibilityRole="button"
+                disabled={isDeletingAccount}
+                onPress={() => {
+                  if (isAccountDeletionComplete) {
+                    setIsDeleteConfirmationVisible(false);
+                    setIsAccountDeletionComplete(false);
+                    clearSignedInState(true);
+                    return;
+                  }
+                  void deleteMyAccount();
+                }}
+                style={[styles.accountDeleteConfirmButton, isDeletingAccount && styles.disabledButton]}
+              >
+                <Text style={styles.accountDeleteConfirmText}>
+                  {isAccountDeletionComplete ? 'Done' : isDeletingAccount ? 'Deleting account…' : 'Permanently delete account'}
+                </Text>
+              </Pressable>
+              {!isAccountDeletionComplete ? (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={isDeletingAccount}
+                  onPress={() => setIsDeleteConfirmationVisible(false)}
+                  style={styles.accountDeleteCancelButton}
+                >
+                  <Text style={styles.accountDeleteCancelText}>Keep my account</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+        </Modal>
       </Shell>
     );
   }
@@ -11012,6 +11163,16 @@ const styles = StyleSheet.create({
   profileShortcutArrow: { color: '#536A86', fontSize: 14, fontWeight: '700' },
   profileSignOutButton: { alignItems: 'center', backgroundColor: '#FFF', borderColor: '#F0D8D8', borderRadius: 15, borderWidth: 1, justifyContent: 'center', marginBottom: 8, marginTop: 20, minHeight: 54 },
   profileSignOutText: { color: '#B14C4C', fontSize: 15, fontWeight: '800' },
+  profileDeleteAccountButton: { alignItems: 'center', backgroundColor: '#FFF6F6', borderColor: '#E8BABA', borderRadius: 15, borderWidth: 1, justifyContent: 'center', marginBottom: 18, minHeight: 54 },
+  profileDeleteAccountText: { color: '#9F3030', fontSize: 15, fontWeight: '800' },
+  accountDeleteModalOverlay: { alignItems: 'center', backgroundColor: 'rgba(12, 28, 48, 0.6)', flex: 1, justifyContent: 'center', padding: 22 },
+  accountDeleteModalCard: { backgroundColor: '#FFF', borderRadius: 20, maxWidth: 480, padding: 22, width: '100%' },
+  accountDeleteModalTitle: { color: '#143A73', fontSize: 21, fontWeight: '800' },
+  accountDeleteModalCopy: { color: '#536A86', fontSize: 14, lineHeight: 21, marginTop: 10 },
+  accountDeleteConfirmButton: { alignItems: 'center', backgroundColor: '#A63131', borderRadius: 13, justifyContent: 'center', marginTop: 18, minHeight: 50, paddingHorizontal: 14 },
+  accountDeleteConfirmText: { color: '#FFF', fontSize: 14, fontWeight: '800' },
+  accountDeleteCancelButton: { alignItems: 'center', justifyContent: 'center', marginTop: 12, minHeight: 44 },
+  accountDeleteCancelText: { color: '#143A73', fontSize: 14, fontWeight: '700' },
   profileName: { color: '#143A73', fontSize: 18, fontWeight: '800' },
   profileEmail: { color: '#6B7F99', fontSize: 13, marginTop: 4 },
   profileCard: { backgroundColor: '#FFF', borderColor: '#D6E4F2', borderRadius: 14, borderWidth: 1, marginTop: 16, padding: 16 },

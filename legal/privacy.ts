@@ -1,4 +1,4 @@
-export const PRIVACY_POLICY_LAST_UPDATED = '28 November 2026';
+export const PRIVACY_POLICY_LAST_UPDATED = '29 November 2026';
 
 export const PRIVACY_POLICY_SECTIONS = [
   {
@@ -42,14 +42,15 @@ export const PRIVACY_POLICY_SECTIONS = [
   {
     title: '6. Retention and security',
     paragraphs: [
-      'GetBuy does not apply one automatic expiry period to every record. We keep information only as long as needed to provide GetBuy, support users, protect the service, resolve disputes, and meet legal or accounting obligations. Contact support@getbuy.com.ng to request account or data deletion; some records may need to be retained where the law requires it.',
+      'You can request deletion of a buyer, seller, or rider account from Profile. We block deletion while the account has active orders, pending payouts or cash remittances, or refunds still being processed. When deletion can proceed, GetBuy removes the sign-in account and identity details, replaces the account reference on retained transactions with a random deleted-account reference, removes profile contact and location details, payout and verification data, notifications, and account-linked chat content, and disables seller listings. Necessary order, payment, delivery, and dispute records may remain for accounting, legal, fraud-prevention, or dispute-resolution purposes and can include historical transaction details. Administrator accounts must be managed by a super administrator.',
+      'GetBuy does not apply one automatic expiry period to every retained record. We keep information only as long as needed to provide GetBuy, support users, protect the service, resolve disputes, and meet legal or accounting obligations. If uploaded files cannot be removed automatically, we will direct you to support@getbuy.com.ng to complete cleanup.',
       'We use access controls and other reasonable technical and organizational safeguards. No internet service can guarantee absolute security.',
     ],
   },
   {
     title: '7. Your choices and rights',
     paragraphs: [
-      'You can review and correct account details through the app where those controls are available. Subject to applicable law, you may request access to, correction of, deletion of, or restriction of your personal information, object to certain processing, request a copy of eligible information, or withdraw consent where processing relies on consent.',
+      'You can review and correct account details through the app where those controls are available. Subject to applicable law, you may request access to, correction of, deletion of, or restriction of your personal information, object to certain processing, request a copy of eligible information, or withdraw consent where processing relies on consent. Account deletion is available in Profile for buyer, seller, and rider accounts; contact support@getbuy.com.ng for other privacy requests or for help with a blocked deletion.',
       'Withdrawing NIN-verification consent does not undo a completed check and means you cannot use seller/rider features that require a verified NIN. To exercise a privacy right or challenge a verification result, contact support@getbuy.com.ng. You may also complain to the Nigeria Data Protection Commission.',
     ],
   },

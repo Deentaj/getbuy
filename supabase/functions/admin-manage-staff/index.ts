@@ -169,6 +169,13 @@ Deno.serve(async (request) => {
       }, { onConflict: 'user_id' });
       if (upsertError) {
         if (!existingUser) {
+          const { error: profileCleanupError } = await admin
+            .from('profiles')
+            .delete()
+            .eq('id', targetId);
+          if (profileCleanupError) {
+            logServerError(createServerErrorId(), 'admin-manage-staff.invite-profile-cleanup', profileCleanupError);
+          }
           const { error: cleanupError } = await admin.auth.admin.deleteUser(targetId);
           if (cleanupError) logServerError(createServerErrorId(), 'admin-manage-staff.invite-cleanup', cleanupError);
         }

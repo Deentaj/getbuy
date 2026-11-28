@@ -1,4 +1,4 @@
-export const TERMS_LAST_UPDATED = '28 November 2026';
+export const TERMS_LAST_UPDATED = '29 November 2026';
 
 export const TERMS_SECTIONS = [
   {
@@ -14,6 +14,7 @@ export const TERMS_SECTIONS = [
       'Provide accurate account and contact details, keep your sign-in credentials secure, and tell us promptly if you suspect someone else is using your account.',
       'Use GetBuy lawfully and respectfully. Do not submit false listings or reviews, interfere with another user, misuse payment or refund processes, or attempt to compromise the app or another account.',
       'You are responsible for activity carried out through your account, except where applicable law provides otherwise. We may restrict access when reasonably needed to protect users, investigate suspected misuse, or comply with law.',
+      'Buyer, seller, and rider accounts can be permanently deleted from Profile. Deletion is blocked while active orders, payouts, cash remittances, or refunds remain unresolved. GetBuy may retain anonymized transaction and dispute records where needed for legal, accounting, fraud-prevention, or dispute-resolution purposes. Administrator accounts must be managed by a super administrator.',
     ],
   },
   {

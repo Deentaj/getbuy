@@ -3,16 +3,58 @@ create extension if not exists "pgcrypto";
 create type public.user_role as enum ('buyer', 'seller', 'delivery', 'admin');
 create type public.order_status as enum ('pending', 'accepted', 'preparing', 'ready', 'out_for_delivery', 'completed', 'cancelled');
 
+create table public.deleted_account_keys (
+  user_id_hash text primary key check (user_id_hash ~ '^[0-9a-f]{64}$'),
+  deleted_at timestamptz not null default now()
+);
+alter table public.deleted_account_keys enable row level security;
+revoke all on public.deleted_account_keys from public, anon, authenticated;
+grant all on public.deleted_account_keys to service_role;
+
 create table public.profiles (
-  id uuid primary key references auth.users(id) on delete cascade,
+  id uuid primary key,
   full_name text not null default '',
   avatar_path text,
   role public.user_role not null default 'buyer',
   phone_number text not null default '',
   location text,
+  deleted_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+create or replace function public.prevent_deleted_profile_recreation()
+returns trigger
+language plpgsql
+security definer
+set search_path = extensions, public, pg_temp
+set row_security = off
+as $$
+begin
+  if new.deleted_at is null and not exists (
+    select 1 from auth.users where id = new.id
+  ) then
+    raise exception 'An active profile must belong to an authentication account.' using errcode = '23503';
+  end if;
+  if new.deleted_at is not null and auth.role() is distinct from 'service_role' then
+    raise exception 'Only the account deletion service can create a deleted profile.' using errcode = '42501';
+  end if;
+  if exists (
+    select 1
+    from public.deleted_account_keys
+    where user_id_hash = encode(digest(new.id::text, 'sha256'), 'hex')
+  ) then
+    raise exception 'This account has been deleted.' using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger block_deleted_profile_recreation
+  before insert on public.profiles
+  for each row execute function public.prevent_deleted_profile_recreation();
+
+revoke all on function public.prevent_deleted_profile_recreation() from public, anon, authenticated;
 
 create table public.stores (
   id uuid primary key default gen_random_uuid(),
@@ -126,6 +168,9 @@ as $$
 $$;
 
 alter table public.profiles enable row level security;
+alter table public.deleted_account_keys enable row level security;
+revoke all on public.deleted_account_keys from public, anon, authenticated;
+grant all on public.deleted_account_keys to service_role;
 alter table public.stores enable row level security;
 alter table public.products enable row level security;
 alter table public.cart_items enable row level security;

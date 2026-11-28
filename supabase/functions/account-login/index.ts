@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { hashIdentifier } from '../_shared/account-login-throttle.ts';
 import { createServerErrorId, logServerError } from '../_shared/server-errors.ts';
 
 const corsHeaders = {
@@ -38,18 +39,6 @@ function getClientIp(request: Request) {
   const forwardedIps = request.headers.get('x-forwarded-for');
   const gatewayIp = forwardedIps?.split(',').map((ip) => ip.trim()).filter(Boolean).at(-1);
   return gatewayIp?.toLowerCase() || null;
-}
-
-async function hashIdentifier(secret: string, value: string) {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 Deno.serve(async (request) => {
