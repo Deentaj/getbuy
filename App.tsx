@@ -9754,6 +9754,8 @@ function AppContent() {
   }
 
   if (screen === 'support') {
+    const canStartSupportChat = role === 'buyer' && Boolean(currentUserId) && !isGuestBrowsing;
+
     return (
       <Shell>
         <BackButton onPress={() => setScreen('tracking')} />
@@ -9761,18 +9763,46 @@ function AppContent() {
         <Text style={styles.pageDescriptionLeft}>Find order guidance, chat with customer service, or email the GetBuy support team.</Text>
         {supportChatError ? <Text style={styles.authError}>{supportChatError}</Text> : null}
         <View style={styles.supportOptions}>
-          {role === 'buyer' && currentUserId && !isGuestBrowsing ? (
-            <Pressable accessibilityRole="button" disabled={isLoadingSupportChat} onPress={() => void openSupportChat()} style={styles.supportOption}>
-              <View style={styles.supportIcon}><Ionicons color="#143A73" name="chatbubbles-outline" size={19} /></View>
-              <View style={styles.productCopy}>
-                <Text style={styles.productName}>{isLoadingSupportChat ? 'Opening live chat…' : 'Chat with customer service'}</Text>
-                <Text style={styles.productStore}>Get quick FAQ help or talk to our team</Text>
-              </View>
-              <Ionicons color="#143A73" name="arrow-forward" size={19} />
-            </Pressable>
-          ) : (
-            <Text style={styles.orderSummaryText}>Live chat is available to signed-in buyer accounts.</Text>
-          )}
+          <Pressable
+            accessibilityRole="button"
+            disabled={isLoadingSupportChat}
+            onPress={() => {
+              if (canStartSupportChat) {
+                void openSupportChat();
+                return;
+              }
+              if (!currentUserId || isGuestBrowsing) {
+                setRole('buyer');
+                setIsGuestBrowsing(false);
+                setAuthError('Sign in with a buyer account to start a live chat.');
+                setScreen('signin');
+                return;
+              }
+              setSupportChatError('Live chat is available to buyer accounts. Please email support for seller or delivery help.');
+            }}
+            style={styles.supportOption}
+          >
+            <View style={styles.supportIcon}><Ionicons color="#143A73" name="chatbubbles-outline" size={19} /></View>
+            <View style={styles.productCopy}>
+              <Text style={styles.productName}>
+                {isLoadingSupportChat
+                  ? 'Opening live chat…'
+                  : canStartSupportChat
+                    ? 'Chat with customer service'
+                    : role === 'buyer'
+                      ? 'Sign in to chat with customer service'
+                      : 'Live chat for buyer accounts'}
+              </Text>
+              <Text style={styles.productStore}>
+                {canStartSupportChat
+                  ? 'Get quick FAQ help or talk to our team'
+                  : role === 'buyer'
+                    ? 'Sign in with a buyer account to start a chat'
+                    : 'Email support is available for seller and delivery accounts'}
+              </Text>
+            </View>
+            <Ionicons color="#143A73" name="arrow-forward" size={19} />
+          </Pressable>
           <Pressable accessibilityRole="link" onPress={contactSupport} style={styles.supportOption}>
             <View style={styles.supportIcon}><Ionicons color="#143A73" name="mail-outline" size={19} /></View>
             <View style={styles.productCopy}>
